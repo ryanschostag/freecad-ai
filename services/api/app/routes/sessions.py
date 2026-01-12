@@ -98,6 +98,18 @@ def post_message(session_id: str, payload: dict, db: Session = Depends(get_db)):
     job.meta["user_message_id"] = user_message_id
     job.save_meta()
 
+    # Persist job in Postgres so it survives Redis flushes
+    db.add(models.JobRun(
+        job_id=job_id,
+        session_id=session_id,
+        user_message_id=user_message_id,
+        status="queued",
+        enqueued_at=datetime.now(timezone.utc),
+        result_json={},
+        error_json={},
+    ))
+    db.commit()
+
     db.add(models.LogEvent(session_id=session_id, type="job.enqueued",
                            payload_json={"job_id": job_id, "message_id": user_message_id}))
     db.commit()

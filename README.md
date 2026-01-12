@@ -131,3 +131,51 @@ docker compose run --rm api pytest -q
 - For strict determinism, set model temperature low (already defaulted low in worker).
 
 See also: `api_spec.yaml`
+
+
+---
+
+## CAD Agent CLI
+A simple CLI is included at:
+- `tools/cad_agent_cli.py`
+
+Install CLI deps on your host (outside Docker) if you want:
+```bash
+pip install httpx
+```
+
+Examples:
+```bash
+python tools/cad_agent_cli.py session create --title demo
+python tools/cad_agent_cli.py prompt send --session-id <SID> --text "Make a bracket" --wait
+python tools/cad_agent_cli.py job status --job-id <JOB_ID> --watch
+python tools/cad_agent_cli.py artifacts list --session-id <SID>
+python tools/cad_agent_cli.py logs get --session-id <SID>
+python tools/cad_agent_cli.py metrics get --session-id <SID>
+python tools/cad_agent_cli.py rag reconcile
+python tools/cad_agent_cli.py rag query --query "FreeCAD sketch solver messages"
+```
+
+---
+
+## Tests
+### Unit tests
+Located at:
+- `services/api/app/tests/`
+
+Run:
+```bash
+docker compose run --rm api pytest -q
+```
+
+### Integration tests (end-to-end)
+Located at:
+- `tests/integration/`
+
+These require the stack to be running (API on localhost).
+
+Run (host Python):
+```bash
+pip install -r tests/requirements.txt
+pytest -m integration -q
+```

@@ -162,3 +162,16 @@ class FactValidationIssue(Base):
     rule_code: Mapped[str] = mapped_column(ForeignKey("dim_validation_rule.rule_code"))
     object_name: Mapped[str|None] = mapped_column(String, nullable=True)
     message: Mapped[str] = mapped_column(Text, default="")
+
+
+class JobRun(Base):
+    __tablename__="job_runs"
+    job_id: Mapped[str] = mapped_column(String, primary_key=True)
+    session_id: Mapped[str] = mapped_column(ForeignKey("dim_session.session_id"), index=True)
+    user_message_id: Mapped[str] = mapped_column(String, index=True)
+    status: Mapped[str] = mapped_column(String, default="queued")  # queued|started|finished|failed
+    enqueued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    started_at: Mapped[datetime|None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime|None] = mapped_column(DateTime(timezone=True), nullable=True)
+    result_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    error_json: Mapped[dict] = mapped_column(JSON, default=dict)

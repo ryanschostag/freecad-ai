@@ -108,6 +108,36 @@ paths:
             application/json:
               schema: {$ref: "#/components/schemas/SessionMetrics"}
 
+
+  /v1/sessions/{session_id}/artifacts:
+    get:
+      summary: List artifacts for a session
+      parameters:
+        - {$ref: "#/components/parameters/SessionId"}
+      responses:
+        "200":
+          description: Artifacts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [artifacts]
+                properties:
+                  artifacts:
+                    type: array
+                    items:
+                      type: object
+                      required: [artifact_id, kind, object_key, created_at]
+                      properties:
+                        artifact_id: {type: string, format: uuid}
+                        kind: {type: string}
+                        object_key: {type: string}
+                        created_at: {type: string, format: date-time}
+                        sha256: {type: string, nullable: true}
+                        bytes: {type: integer, nullable: true}
+                        message_id: {type: string}
+                        event_type: {type: string}
+
   /v1/artifacts/{artifact_id}:
     get:
       summary: Get a presigned download URL

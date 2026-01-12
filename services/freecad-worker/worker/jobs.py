@@ -30,6 +30,7 @@ def _taxonomy_from_output(stdout: str, stderr: str) -> list[dict[str, Any]]:
 def _runner_script() -> str:
     return r"""import sys, os, traceback, json
 import FreeCAD as App
+import json
 
 def parse_args(argv):
     out = {"macro": None, "outdir": None, "fcstd": "1", "step":"1", "stl":"0"}
@@ -80,6 +81,19 @@ def main():
                 if msgs:
                     for m in msgs:
                         print("VALIDATION:SKETCH_SOLVER:" + str(m))
+
+                # Emit sketch status (best-effort; APIs differ by version)
+                try:
+                    status = {
+                        "name": getattr(obj, "Name", None),
+                        "label": getattr(obj, "Label", None),
+                        "dof": getattr(obj, "DegreeOfFreedom", None),
+                        "constraints": getattr(obj, "ConstraintCount", None),
+                        "geometries": getattr(obj, "GeometryCount", None),
+                    }
+                    print("VALIDATION:SKETCH_STATUS:" + json.dumps(status))
+                except Exception as e:
+                    print("VALIDATION:SKETCH_STATUS_ERROR:" + str(e))
         except Exception as e:
             print("VALIDATION:SKETCH_CHECK_EXCEPTION:" + str(e))
 
@@ -143,6 +157,17 @@ def _run_freecad_headless(macro_code: str, export: dict[str,bool]) -> tuple[bool
 
         # Parse our explicit VALIDATION markers
         for line in (stdout or "").splitlines():
+            if line.startswith("VALIDATION:SKETCH_STATUS:"):
+                try:
+                    payload = json.loads(line.replace("VALIDATION:SKETCH_STATUS:","",1))
+                    # If DoF is present and >0, flag underconstrained as warning.
+                    dof = payload.get("dof")
+                    name = payload.get("name") or payload.get("label")
+                    if isinstance(dof, int) and dof > 0:
+                        issues.append({"rule_code":"CONSTRAINT_UNDERCONSTRAINED","object_name":name,"message":f"Sketch has DoF={dof}","severity":"warning"})
+                except Exception:
+                    pass
+
             if line.startswith("VALIDATION:FREECAD_EXCEPTION:"):
                 issues.append({"rule_code":"FREECAD_EXCEPTION","object_name":None,"message":line.split(":",2)[2],"severity":"error"})
             if line.startswith("VALIDATION:EXPORT_FAILED:"):
