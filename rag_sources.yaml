@@ -6,6 +6,7 @@ policy:
     - freecad.org
     - wiki.freecad.org
     - docs.freecad.org
+    - wikipedia.org
   deny_domains:
     - medium.com
     - reddit.com

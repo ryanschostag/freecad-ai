@@ -1,82 +1,133 @@
-# CAD Agent (Local-first, Self-hosted)
+# CAD Agent (local, private) — FreeCAD + RAG + Repair Loop
 
-This repo scaffolds a **self-hosted** “CAD Agent” system that:
-- exposes a REST API for sessions/prompts
-- runs a local LLM backend (CPU-first via llama.cpp; GPU-ready via vLLM profile)
-- validates generated CAD macros via a FreeCAD headless worker (stubbed in this scaffold)
-- manages authoritative RAG sources via a whitelist/blacklist YAML config
-- stores everything in Postgres using a **star schema** (fact/dimension) for analytics
-- stores artifacts on a mounted folder (and can be swapped to S3-compatible object storage later)
+This repo runs a **private, local-first** CAD assistant:
+- **API**: FastAPI (REST)
+- **Jobs**: Redis queue + RQ worker
+- **Worker**: headless `freecadcmd` execution + export (FCStd/STEP/STL)
+- **Artifacts**: MinIO (S3-compatible) + **presigned URLs**
+- **RAG**: Postgres + pgvector (authoritative allowlist/denylist)
+- **Analytics**: Postgres star schema (facts/dimensions)
 
-> No OpenAI or third-party hosted LLM services are used. This stack is designed to keep prompts and data local.
+> No OpenAI or 3rd party hosted LLM services are required. You run your own LLM container (CPU or GPU) on your hardware.
 
-## Quick start (Windows 11 + Docker Desktop)
+---
 
-1. Create host folders:
-   - `C:\cad-agent\data\artifacts`
-   - `C:\cad-agent\data\models`
-   - `C:\cad-agent\data\ragconfig`
+## Quick start (CPU, Windows 11 Docker Desktop)
 
-2. Copy `rag_sources.yaml` to your host folder:
-   - `C:\cad-agent\data\ragconfig\rag_sources.yaml`
+### 0) Prerequisites / dependencies
+- Windows 11 + **Docker Desktop** (WSL2 backend recommended)
+- Docker Desktop resources (recommended):
+  - **8 CPUs**
+  - **12–16 GB RAM**
+  - **20+ GB disk free** (FreeCAD worker image is large)
+- Optional:
+  - Git
+  - curl (or use Postman)
 
-3. Start the CPU profile:
+### 1) Provide a local model (CPU)
+The `llm` container uses **llama.cpp server** and expects a GGUF model at:
+- `models/model.gguf` (Docker volume `models`)
+
+**Option A (recommended):** copy a GGUF file into the volume
+- Create a folder `./models` at repo root
+- Put your model at `./models/model.gguf`
+- Update `docker-compose.yml` `llm` volume mount if you prefer a bind-mount
+
+**Model size suggestions (CPU):**
+- 3B–7B, quantized (e.g., Q4_K_M) is realistic on typical laptops.
+- If responses are too slow, use a smaller model or lower context length.
+
+### 2) Start services
 ```bash
 docker compose --profile cpu up --build
 ```
 
-4. Health check:
+### 3) Initialize DB
 ```bash
-curl http://localhost:8080/v1/health
+docker compose run --rm api alembic upgrade head
 ```
 
-5. Create a session:
+### 4) Create a session
 ```bash
-curl -X POST http://localhost:8080/v1/sessions -H "Content-Type: application/json" -d '{"title":"test"}'
+curl -X POST http://localhost:8080/v1/sessions \
+  -H "Content-Type: application/json" \
+  -d '{"title":"demo"}'
 ```
 
-6. Send a message:
+### 5) Send a prompt (enqueues a job)
 ```bash
-curl -X POST http://localhost:8080/v1/sessions/<session_id>/messages -H "Content-Type: application/json" -d '{"content":"Create a 20mm cube in FreeCAD python."}'
+curl -X POST http://localhost:8080/v1/sessions/<SESSION_ID>/messages \
+  -H "Content-Type: application/json" \
+  -d '{
+    "content":"Create a parametric bracket with 2 mounting holes and filleted corners",
+    "mode":"design",
+    "export":{"fcstd":true,"step":true,"stl":false},
+    "units":"mm",
+    "tolerance_mm":0.1
+  }'
 ```
 
-## GPU host (Linux + CUDA) later
+You will receive a `job_id`.
 
-Use the GPU profile and override:
+### 6) Poll job status
 ```bash
-docker compose --profile gpu -f docker-compose.yml -f docker-compose.gpu.override.yml up --build
+curl http://localhost:8080/v1/jobs/<JOB_ID>
 ```
 
-## API contract
+When finished, `result.artifacts[]` contains object keys. To download via API:
+- Find an artifact id in DB (or extend the API to list artifacts per session)
+- Use `GET /v1/artifacts/{artifact_id}` to get a presigned URL.
 
-The REST contract is in:
-- `api_spec.yaml`
+---
 
-## Star schema analytics
+## Repair loop behavior (end-to-end)
+Each job runs:
+1. **Generate** FreeCAD macro using local LLM (OpenAI-compatible endpoint)
+2. Run **headless FreeCAD validation/export** (`freecadcmd`)
+3. If validation fails, call LLM with a **constraint-aware repair prompt**
+4. Retry up to `max_repair_iterations` (default: 3)
 
-Facts:
-- `fact_prompt`, `fact_completion`, `fact_validation_result`, `fact_citation`,
-  `fact_artifact_event`, `fact_source_change`, `fact_ingest_run`, `fact_ingest_run_item`
+Worker writes validation reports to MinIO:
+- `sessions/<session_id>/reports/<user_message_id>.validation.<iter>.json`
 
-Dimensions:
-- `dim_time`, `dim_session`, `dim_user`, `dim_model`, `dim_source`, `dim_artifact`, `dim_validation_rule`
+---
 
-Example: prompts per session
-```sql
-SELECT session_id, COUNT(*) AS prompts
-FROM fact_prompt
-GROUP BY session_id
-ORDER BY prompts DESC;
+## GPU later (minimal changes)
+A GPU host can use the `llm-gpu` profile (vLLM OpenAI-compatible server).
+
+Example:
+- `docker compose --profile gpu -f docker-compose.yml -f docker-compose.gpu.override.yml up --build`
+
+Then set:
+- `LLM_BASE_URL=http://llm-gpu:8000`
+
+---
+
+## RAG (pgvector) — allowlist/denylist
+Edit `rag_sources.yaml` then run:
+```bash
+curl -X POST http://localhost:8080/v1/rag/sources/reconcile
 ```
 
-## Testing
+Query retrieval:
+```bash
+curl -X POST http://localhost:8080/v1/rag/query \
+  -H "Content-Type: application/json" \
+  -d '{"query":"FreeCAD sketch constraints best practices","top_k":8,"max_trust_tier":2}'
+```
 
-Run unit/API tests (from repo root):
+---
+
+## Tests
 ```bash
 docker compose run --rm api pytest -q
 ```
 
-## Notes / TODO
+---
 
-- The FreeCAD worker in this scaffold is a stub (no real FreeCAD execution). Replace the stub with a headless FreeCAD container/job runner.
-- The RAG service currently implements whitelist reconciliation + logging; the actual crawler/downloader/indexer is stubbed.
+## Notes
+- The worker container installs FreeCAD via Ubuntu packages; it is intentionally “fat” so headless CAD is reliable.
+- The LLM prompt format is designed to return **only Python macro code** (no markdown).
+- For strict determinism, set model temperature low (already defaulted low in worker).
+
+See also: `api_spec.yaml`

@@ -1,42 +1,16 @@
-# Python
 __pycache__/
 *.py[cod]
-*.pyo
-*.pyd
-*.egg-info/
 dist/
 build/
-.coverage
-htmlcov/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-
-# Env / secrets
 .env
 .env.*
-*.pem
-*.key
-*.crt
-
-# IDE
 .vscode/
 .idea/
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Docker / runtime data (mounted volumes)
-data/
-artifacts/
-models/
 pgdata/
-minio/
-rag_cache/
-
-# Logs
+miniodata/
+models/
+artifacts_staging/
 *.log
-
-# Node (if any)
-node_modules/
