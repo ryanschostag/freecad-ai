@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FreeCADWorkerJob",
+  "type": "object",
+  "required": [
+    "job_id",
+    "session_id",
+    "kind",
+    "inputs",
+    "output",
+    "limits"
+  ],
+  "properties": {
+    "job_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "session_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "message_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "run_macro_and_validate"
+      ]
+    },
+    "inputs": {
+      "type": "object",
+      "required": [
+        "macro_path",
+        "units",
+        "tolerance_mm",
+        "manufacturing_profile",
+        "export"
+      ],
+      "properties": {
+        "macro_path": {
+          "type": "string"
+        },
+        "base_fcstd_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "units": {
+          "type": "string",
+          "enum": [
+            "mm",
+            "inch"
+          ]
+        },
+        "tolerance_mm": {
+          "type": "number"
+        },
+        "manufacturing_profile": {
+          "type": "string",
+          "enum": [
+            "fdm_3d_print",
+            "sla_3d_print",
+            "cnc_basic"
+          ]
+        },
+        "export": {
+          "type": "object",
+          "properties": {
+            "fcstd": {
+              "type": "boolean"
+            },
+            "step": {
+              "type": "boolean"
+            },
+            "stl": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "fcstd",
+            "step",
+            "stl"
+          ]
+        }
+      }
+    },
+    "output": {
+      "type": "object",
+      "required": [
+        "artifact_dir",
+        "reports_dir"
+      ],
+      "properties": {
+        "artifact_dir": {
+          "type": "string"
+        },
+        "reports_dir": {
+          "type": "string"
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "required": [
+        "timeout_seconds",
+        "max_repair_iterations"
+      ],
+      "properties": {
+        "timeout_seconds": {
+          "type": "integer"
+        },
+        "max_repair_iterations": {
+          "type": "integer"
+        }
+      }
+    }
+  }
+}

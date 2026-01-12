@@ -1,0 +1,70 @@
+services:
+  api:
+    build: ./services/api
+    ports:
+      - "8080:8080"
+    environment:
+      - DATABASE_URL=postgresql+psycopg://cad:cad@db:5432/cad
+      - ARTIFACT_DIR=/artifacts
+      - RAG_SOURCES_CONFIG=/config/rag_sources.yaml
+      - LLM_BASE_URL=http://llm:8000
+      - FREECAD_WORKER_URL=http://freecad-worker:8070
+      - STORAGE_MODE=localfs
+    volumes:
+      - artifacts:/artifacts
+      - ragconfig:/config
+    depends_on:
+      - db
+      - llm
+      - freecad-worker
+
+  db:
+    image: postgres:16
+    environment:
+      - POSTGRES_USER=cad
+      - POSTGRES_PASSWORD=cad
+      - POSTGRES_DB=cad
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  llm:
+    profiles: ["cpu"]
+    image: ghcr.io/ggerganov/llama.cpp:server
+    command: >
+      --host 0.0.0.0 --port 8000
+      --model /models/model.gguf
+      --threads 8
+      --ctx-size 4096
+    ports:
+      - "8000:8000"
+    volumes:
+      - models:/models
+
+  llm-gpu:
+    profiles: ["gpu"]
+    image: vllm/vllm-openai:latest
+    environment:
+      - HF_HOME=/hf
+      - TRANSFORMERS_CACHE=/hf
+    ports:
+      - "8001:8000"
+    volumes:
+      - hfcache:/hf
+
+  freecad-worker:
+    build: ./services/freecad-worker
+    ports:
+      - "8070:8070"
+    environment:
+      - ARTIFACT_DIR=/artifacts
+    volumes:
+      - artifacts:/artifacts
+
+volumes:
+  pgdata:
+  artifacts:
+  models:
+  hfcache:
+  ragconfig:
