@@ -52,7 +52,7 @@ def get_job(job_id: str, db: Session = Depends(get_db)):
         user_message_id = rec.user_message_id
 
     resp = {
-        "job_id": str(uuid.UUID(job_id)),
+        "job_id": job_id,
         "status": status,
         "session_id": session_id,
         "user_message_id": user_message_id,

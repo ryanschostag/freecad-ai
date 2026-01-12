@@ -45,7 +45,7 @@ services:
       - "6379:6379"
 
   minio:
-    image: minio/minio:RELEASE.2024-12-18T01-18-29Z
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
     command: server /data --console-address ":9001"
     environment:
       - MINIO_ROOT_USER=minioadmin
@@ -57,7 +57,7 @@ services:
       - miniodata:/data
 
   minio-init:
-    image: minio/mc:RELEASE.2024-12-18T01-29-02Z
+    image: minio/mc:RELEASE.2024-11-21T17-21-54Z
     depends_on:
       - minio
     entrypoint: >
@@ -69,7 +69,7 @@ services:
 
   llm:
     profiles: ["cpu"]
-    image: ghcr.io/ggerganov/llama.cpp:server
+    image: ghcr.io/ggml-org/llama.cpp:server
     command: >
       --host 0.0.0.0 --port 8000
       --model /models/model.gguf
@@ -80,16 +80,26 @@ services:
     volumes:
       - models:/models
 
-  llm-gpu:
+  llm-cuda:
     profiles: ["gpu"]
-    image: vllm/vllm-openai:latest
-    environment:
-      - HF_HOME=/hf
-      - TRANSFORMERS_CACHE=/hf
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    command: >
+      --host 0.0.0.0 --port 8000
+      --model /models/model.gguf
+      --threads 8
+      --ctx-size 4096
+      --n-gpu-layers 999
     ports:
-      - "8001:8000"
+      - "8000:8000"
     volumes:
-      - hfcache:/hf
+      - models:/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
   freecad-worker:
     build: ./services/freecad-worker

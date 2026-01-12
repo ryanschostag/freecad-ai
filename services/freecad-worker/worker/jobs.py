@@ -123,7 +123,11 @@ if __name__ == "__main__":
         raise
 """
 
-def _run_freecad_headless(macro_code: str, export: dict[str,bool]) -> tuple[bool, list[dict[str,Any]], dict[str, bytes], str, str]:
+def _run_freecad_headless(
+    macro_code: str,
+    export: dict[str,bool],
+    timeout_seconds: int,
+) -> tuple:
     """Returns: passed, issues, produced_files{name->bytes}, stdout, stderr"""
     freecadcmd = shutil.which("freecadcmd")
     if not freecadcmd:
@@ -150,7 +154,24 @@ def _run_freecad_headless(macro_code: str, export: dict[str,bool]) -> tuple[bool
             "--step", "1" if export.get("step", True) else "0",
             "--stl", "1" if export.get("stl", False) else "0",
         ]
-        p = subprocess.run(cmd, capture_output=True, text=True)
+
+        try:
+            p = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+            )
+            stdout, stderr = p.stdout, p.stderr
+        except subprocess.TimeoutExpired as e:
+            issues = [{
+                "rule_code": "FREECAD_TIMEOUT",
+                "object_name": None,
+                "message": f"freecadcmd exceeded timeout_seconds={timeout_seconds}",
+                "severity": "error",
+            }]
+            return False, issues, {}, (e.stdout or ""), (e.stderr or "")
+
         stdout, stderr = p.stdout, p.stderr
 
         issues = _taxonomy_from_output(stdout, stderr)
@@ -221,7 +242,11 @@ def run_repair_loop_job(
     passed = False
 
     for i in range(max_repair_iterations):
-        passed, issues, produced_files, out, err = _run_freecad_headless(macro_code, export)
+        passed, issues, produced_files, out, err = _run_freecad_headless(
+            macro_code,
+            export,
+            timeout_seconds,
+        )
         last_stdout, last_stderr = out, err
 
         report = {
