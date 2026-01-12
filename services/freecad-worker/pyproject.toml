@@ -9,3 +9,6 @@ dependencies = [
   "pydantic-settings==2.4.0",
   "httpx==0.27.2",
 ]
+
+[tool.setuptools.packages.find]
+include = ["worker*", "shared*"]
