@@ -1,10 +1,15 @@
 from logging.config import fileConfig
 from sqlalchemy import engine_from_config, pool
 from alembic import context
+import logging
 import os
 config = context.config
-if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+if config.config_file_name:
+    try:
+        fileConfig(config.config_file_name)
+    except KeyError:
+        # alembic.ini has no logging sections; fall back to default logging
+        logging.basicConfig(level=logging.INFO)
 from app.models import Base
 target_metadata = Base.metadata
 def run_migrations_offline():

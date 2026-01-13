@@ -4,16 +4,19 @@ Revision ID: 0001_init
 Revises:
 Create Date: 2026-01-11
 """
-
+from pgvector.sqlalchemy import Vector
 from alembic import op
 import sqlalchemy as sa
+
 
 revision = "0001_init"
 down_revision = None
 branch_labels = None
 depends_on = None
 
+
 def upgrade() -> None:
+    op.execute("CREATE EXTENSION IF NOT EXISTS vector;")
     op.create_table(
         "dim_time",
         sa.Column("time_id", sa.Integer, primary_key=True, autoincrement=True),
@@ -82,6 +85,36 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     )
 
+    op.create_table("rag_documents",
+        sa.Column("doc_id", sa.String, primary_key=True),
+        sa.Column("source_id", sa.String, sa.ForeignKey("dim_source.source_id"), nullable=False),
+        sa.Column("url", sa.Text, nullable=False),
+        sa.Column("title", sa.Text, nullable=True),
+        sa.Column("retrieved_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("content_hash", sa.String, nullable=True),
+        sa.Column("license_note", sa.Text, nullable=True),
+        sa.Column("metadata_json", sa.JSON, nullable=False),
+    )
+    op.create_table("rag_chunks",
+        sa.Column("chunk_id", sa.String, primary_key=True),
+        sa.Column("doc_id", sa.String, sa.ForeignKey("rag_documents.doc_id"), nullable=False),
+        sa.Column("source_id", sa.String, sa.ForeignKey("dim_source.source_id"), nullable=False),
+        sa.Column("ordinal", sa.Integer, nullable=False),
+        sa.Column("locator", sa.Text, nullable=False),
+        sa.Column("text", sa.Text, nullable=False),
+        sa.Column("embedding", Vector(384), nullable=False),
+        sa.Column("metadata_json", sa.JSON, nullable=False),
+    )
+
+    op.execute("CREATE INDEX IF NOT EXISTS ix_rag_chunks_embedding ON rag_chunks USING ivfflat (embedding vector_l2_ops) WITH (lists = 100);")
+    op.create_table("log_events",
+        sa.Column("event_id", sa.String, primary_key=True),
+        sa.Column("session_id", sa.String, sa.ForeignKey("dim_session.session_id"), nullable=False),
+        sa.Column("ts", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("type", sa.String, nullable=False),
+        sa.Column("payload_json", sa.JSON, nullable=False),
+    )
+
     op.create_table(
         "fact_prompt",
         sa.Column("prompt_fact_id", sa.String, primary_key=True),
@@ -148,14 +181,6 @@ def upgrade() -> None:
         sa.Column("notes", sa.Text, nullable=True),
     )
 
-    op.create_table(
-        "log_events",
-        sa.Column("event_id", sa.String, primary_key=True),
-        sa.Column("session_id", sa.String, sa.ForeignKey("dim_session.session_id"), nullable=False, index=True),
-        sa.Column("ts", sa.DateTime(timezone=True), nullable=False, index=True),
-        sa.Column("type", sa.String, nullable=False, index=True),
-        sa.Column("payload_json", sa.JSON, nullable=False),
-    )
 
 def downgrade() -> None:
     op.drop_table("log_events")
@@ -171,3 +196,5 @@ def downgrade() -> None:
     op.drop_table("dim_model")
     op.drop_table("dim_user")
     op.drop_table("dim_time")
+    op.drop_table("rag_chunks")
+    op.drop_table("rag_documents")
