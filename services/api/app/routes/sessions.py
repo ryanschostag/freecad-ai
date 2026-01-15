@@ -76,8 +76,9 @@ def post_message(session_id: str, payload: dict, db: Session = Depends(get_db)):
 
     q = get_queue("freecad")
     job_id = str(uuid.uuid4())
-    job = q.enqueue(
-        "worker.jobs.run_repair_loop_job",
+
+    job = q.enqueue_call(
+        func="worker.jobs.run_repair_loop_job",
         kwargs={
             "job_id": job_id,
             "session_id": session_id,
@@ -89,9 +90,25 @@ def post_message(session_id: str, payload: dict, db: Session = Depends(get_db)):
             "tolerance_mm": tolerance_mm,
             "max_repair_iterations": 3,
             "timeout_seconds": 300,
-            "result_ttl": 3600,
-            "failure_ttl": 3600,
-            "job_timeout": 300,
+        },
+        job_id=job_id,
+        result_ttl=3600,
+        failure_ttl=3600,
+    )
+
+    job = q.enqueue_call(
+        "worker.jobs.run_repair_loop_job",
+        kwargs={
+            "job_id": job_id,
+            "session_id": session_id,
+            "user_message_id": user_message_id,
+            "prompt": content,
+            "mode": mode,
+            "export": export,
+            "units": units,
+            "tolerance_mm": tolerance_mm,
+            "max_repair_iterations": 3,
+            "timeout_seconds": 300
         },
         job_id=job_id,
         result_ttl=3600,

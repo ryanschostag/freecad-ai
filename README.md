@@ -1,390 +1,284 @@
-# CAD Agent — Private, Local-First CAD Automation with FreeCAD
+# FreeCAD‑AI
 
-A fully self-hosted CAD assistant that generates, validates, repairs, and exports FreeCAD models using:
+This repository provides a **working local pipeline** for generating CAD artifacts (FreeCAD `.FCStd`, STEP, STL) from natural‑language prompts using:
 
-- Local LLMs (CPU or CUDA GPU)
-- Headless FreeCAD validation
-- Automatic constraint repair loop
-- Authoritative RAG (pgvector)
-- S3-compatible artifact storage (MinIO)
-- Full audit logging and analytics-ready schema
-- Unit and integration tests (pytest)
-- CLI for day-to-day use
+* A FastAPI backend (`api`)
+* An RQ/Redis worker that runs FreeCAD logic (`freecad-worker`)
+* A local LLM served via `llama.cpp` (`llm`, CPU profile)
+* Postgres (with pgvector), Redis, and MinIO for persistence
 
-No OpenAI or third-party hosted LLMs are required.  
-All prompts, models, documents, and artifacts stay on your machine or infrastructure.
+The system is **functional and tested end‑to‑end**. This README documents the *current, verified state* — not aspirational features.
 
 ---
 
-## Architecture Overview
+## Current Status (Important)
 
-### Core components
+**What works today**
 
-- API: FastAPI (REST)
-- Jobs: Redis + RQ
-- Worker: FreeCAD (freecadcmd) headless execution
-- LLM: Local OpenAI-compatible server (llama.cpp / vLLM)
-- RAG: Postgres + pgvector
-- Artifacts: MinIO (S3-compatible)
-- Database: Postgres (star schema: facts and dimensions)
+* Docker Compose setup with `cpu` profile
+* Local GGUF LLM via `llama.cpp` HTTP server
+* Session creation via REST API
+* Job enqueue via REST API
+* RQ worker executes jobs successfully
+* LLM is queried correctly from the worker
+* Integration test passes end‑to‑end (`pytest tests/integration`)
+* Artifacts are generated and stored
 
-### High-level flow
+**What is intentionally NOT done yet**
 
-1. User sends prompt to API
-2. API enqueues background job
-3. Worker:
-   - calls local LLM
-   - generates FreeCAD macro
-   - runs headless FreeCAD validation
-   - repairs constraints if needed
-   - exports FCStd / STEP / STL
-4. Artifacts stored in MinIO
-5. Results queried via API or CLI
+* No LLM health‑gating before job enqueue
+* Job results currently live in Redis only (TTL‑based)
+* Job state transitions are functional but not strictly enforced
+* No lightweight / fake LLM test profile yet
+
+These are planned next steps and **not bugs**.
 
 ---
 
-## Prerequisites
+## Requirements
 
-### Required
-
-- Docker Desktop
-  - Windows 11 (WSL2 backend recommended)
-  - or Linux
-- 8+ GB RAM (16 GB recommended)
-- 20+ GB disk (FreeCAD worker image is large)
-
-### Optional
-
-- Git
-- Python 3.10+ (for CLI and integration tests)
-- curl or Postman
+* Docker Desktop (Windows / macOS / Linux)
+* ~8–16 GB RAM recommended for 7B GGUF models
+* A GGUF LLM file (see below)
 
 ---
 
-## Quick Start (CPU)
+## LLM Model Setup (Required)
 
-### 1. Provide a local LLM model
+This project **does not ship a model**. You must supply one.
 
-This project expects an OpenAI-compatible local LLM server.
+### Supported format
 
-For CPU:
-- Use llama.cpp server
-- Place a GGUF model at:
+* **GGUF** (required)
+* Compatible with `llama.cpp` HTTP server
+
+### Recommended models (known to work)
+
+* Qwen2.5‑Coder‑7B‑Instruct‑Q4_K_M.gguf
+* Code‑oriented instruct models work best
+
+### Where the model goes
+
+Create a directory at the repo root:
 
 ```
-./models/model.gguf
+models/
+  Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf
 ```
 
-Recommended CPU models:
-- 3B–7B
-- Quantized (Q4_K_M or smaller)
+The file **does not** need to be renamed to `model.gguf`.
 
 ---
 
-### 2. Start the stack
+## Docker Compose
 
-```bash
-docker compose --profile cpu up --build
+### CPU profile (normal usage)
+
+```
+docker compose --profile cpu up -d --build
+```
+
+This starts:
+
+* `api` → [http://localhost:8080](http://localhost:8080)
+* `llm` → [http://localhost:8000](http://localhost:8000)
+* `freecad-worker`
+* `db`, `redis`, `minio`
+
+### Verify services
+
+```
+docker compose ps
+```
+
+You should see all services **Up**, and `llm` should *not* be restarting.
+
+---
+
+## API Usage
+
+### Create a session
+
+```
+POST http://localhost:8080/v1/sessions
+
+{
+  "title": "itest"
+}
+```
+
+Response:
+
+```
+201
+{
+  "session_id": "<uuid>",
+  "status": "active"
+}
 ```
 
 ---
 
-### 3. Initialize the database
+### Enqueue a job
 
-```bash
-docker compose run --rm api alembic upgrade head
+```
+POST /v1/sessions/{session_id}/messages
+
+{
+  "content": "Create a simple box 10mm x 20mm x 5mm",
+  "mode": "design",
+  "units": "mm",
+  "tolerance_mm": 0.1,
+  "export": {
+    "fcstd": true,
+    "step": true,
+    "stl": false
+  }
+}
+```
+
+Response:
+
+```
+202
+{
+  "job_id": "<uuid>"
+}
 ```
 
 ---
 
-### 4. Create a session
-
-```bash
-curl -X POST http://localhost:8080/v1/sessions \
-  -H "Content-Type: application/json" \
-  -d '{"title":"demo"}'
-```
-
-The response includes a session_id.
-
----
-
-### 5. Send a prompt (async job)
-
-```bash
-curl -X POST http://localhost:8080/v1/sessions/<SESSION_ID>/messages \
-  -H "Content-Type: application/json" \
-  -d '{
-    "content":"Create a parametric bracket with two mounting holes",
-    "mode":"design",
-    "export":{"fcstd":true,"step":true,"stl":false},
-    "units":"mm",
-    "tolerance_mm":0.1
-  }'
-```
-
-Returns:
-- job_id
-- user_message_id
-
----
-
-### 6. Poll job status
-
-```bash
-curl http://localhost:8080/v1/jobs/<JOB_ID>
-```
-
-Job statuses:
-- queued
-- started
-- finished
-- failed
-
-Jobs persist in Postgres even if Redis restarts.
-
----
-
-### 7. List artifacts for a session
-
-```bash
-curl http://localhost:8080/v1/sessions/<SESSION_ID>/artifacts
-```
-
-Artifacts include:
-- FreeCAD macros
-- Validation reports
-- FCStd / STEP / STL exports
-
----
-
-### 8. Download artifacts
-
-```bash
-curl http://localhost:8080/v1/artifacts/<ARTIFACT_ID>
-```
-
-Returns a presigned URL (MinIO / S3-compatible).
-
----
-
-## Repair Loop
-
-Each job runs:
-
-1. Generate macro via local LLM
-2. Run FreeCAD headless validation (freecadcmd)
-3. Parse validation output
-   - Sketch solver messages
-   - Degree of Freedom (DoF)
-   - Export failures
-4. Repair if needed using a constraint-aware prompt
-5. Retry (default: 3 iterations)
-
-### Validation taxonomy
-
-- CONSTRAINT_OVERCONSTRAINED
-- CONSTRAINT_UNDERCONSTRAINED
-- CONSTRAINT_REDUNDANT
-- FREECAD_EXCEPTION
-- EXPORT_FAILED
-
-All iterations and reports are preserved.
-
----
-
-## Sessions
-
-### Create
+### Poll job status
 
 ```
-POST /v1/sessions
+GET /v1/jobs/{job_id}
 ```
 
-### End (close)
+States observed in practice:
 
-```
-POST /v1/sessions/{session_id}/end
-```
+* `queued`
+* `started`
+* `finished`
+* `failed`
 
-### Fork (branch)
-
-```
-POST /v1/sessions/{session_id}/fork
-```
-
-Forking creates a new session that inherits context but diverges cleanly.
-
----
-
-## RAG (Authoritative Knowledge Only)
-
-### Configure sources
-
-Edit:
-
-```
-rag_sources.yaml
-```
-
-Supports:
-- allowlist
-- blacklist
-- trust tiers
-- scholarly or official sources only
-
----
-
-### Reconcile sources into the database
-
-```bash
-curl -X POST http://localhost:8080/v1/rag/sources/reconcile
-```
-
-All changes are logged for auditability.
-
----
-
-### Query RAG
-
-```bash
-curl -X POST http://localhost:8080/v1/rag/query \
-  -H "Content-Type: application/json" \
-  -d '{"query":"FreeCAD sketch constraint best practices","top_k":8,"max_trust_tier":2}'
-```
-
-Uses pgvector inside Postgres.
+A successful job eventually returns `finished`.
 
 ---
 
 ## CLI Tool
 
-Location:
+`tools/cad_agent_cli.py` can be used to create sessions and enqueue jobs.
+
+Example:
 
 ```
-tools/cad_agent_cli.py
+python tools/cad_agent_cli.py session create \
+  --title "test session" \
+  --project-id "1234"
 ```
 
-Install dependencies on host:
+The CLI currently assumes:
 
-```bash
-pip install httpx
-```
+* API is reachable
+* LLM is healthy
 
-### CLI examples
-
-Create session:
-```bash
-python tools/cad_agent_cli.py session create --title demo
-```
-
-Send prompt and wait:
-```bash
-python tools/cad_agent_cli.py prompt send \
-  --session-id <SID> \
-  --text "Create a mounting bracket" \
-  --wait
-```
-
-Watch job:
-```bash
-python tools/cad_agent_cli.py job status --job-id <JOB_ID> --watch
-```
-
-List artifacts:
-```bash
-python tools/cad_agent_cli.py artifacts list --session-id <SID>
-```
-
-RAG:
-```bash
-python tools/cad_agent_cli.py rag reconcile
-python tools/cad_agent_cli.py rag query --query "FreeCAD Sketcher solver"
-```
-
----
-
-## GPU Usage (Later)
-
-On a CUDA-capable host:
-
-```bash
-docker compose --profile gpu \
-  -f docker-compose.yml \
-  -f docker-compose.gpu.override.yml up --build
-```
-
-Supported GPU backends:
-- vLLM (OpenAI-compatible)
-- llama.cpp CUDA
-
-No API or code changes required.
+(Health checks will be added later.)
 
 ---
 
 ## Testing
 
-### Unit Tests
+### Integration test (real LLM)
 
-Location:
 ```
-services/api/app/tests/
-```
-
-Run:
-
-```bash
-docker compose run --rm api pytest -q
+pytest -vv --full-trace tests
 ```
 
-Covers:
-- API routes
-- schema validation
-- database logic
-- job persistence
+Notes:
+
+* Uses **real LLM inference**
+* Test duration: ~2–3 minutes
+* This is expected and normal
+
+### Passing output example
+
+```
+1 passed in ~180s
+```
 
 ---
 
-### Integration Tests (End-to-End)
+## Common Debugging
 
-Location:
+### LLM keeps restarting
+
+Check logs:
+
 ```
-tests/integration/
-```
-
-Requirements:
-- Stack running on localhost
-- Host Python
-
-Install:
-```bash
-pip install -r tests/requirements.txt
+docker compose logs -f llm
 ```
 
-Run:
-```bash
-pytest -m integration -q
+If you see:
+
+```
+failed to open GGUF file '/models/...'
 ```
 
-Covers:
-- session creation
-- job enqueue
-- repair loop execution
-- artifact creation
-- artifact listing
+Then:
+
+* The file path is wrong **or**
+* The model file is not readable **or**
+* The volume mount is incorrect
+
+Ensure:
+
+```
+volumes:
+  - ./models:/models:ro
+```
 
 ---
 
-## What Is Not Tested Automatically
+### Job stuck in `started`
 
-- Individual generated FreeCAD macros  
-  These are validated via headless FreeCAD execution, not unit tests.
-- Patent infringement  
-  This system provides risk warnings only, not legal guarantees.
+This usually means:
+
+* The worker finished
+* But job state persistence was interrupted (Redis TTL, restart)
+
+A restart typically resolves this. Result persistence will be improved later.
 
 ---
 
-## License
+## Architecture Notes
 
-See LICENSE.md  
-(Proprietary / internal use)
+* Redis is currently the **only job state store**
+* Job results are ephemeral
+* MinIO is used for artifact storage
+* Postgres stores metadata, sessions, messages
+
+This is intentional for the current phase.
+
+---
+
+## Planned Next Steps (Not Implemented Yet)
+
+* LLM `/health` endpoint + job enqueue gating
+* Strict job state transitions
+* Persist job results outside Redis (DB / S3)
+* Lightweight `test` profile with fake LLM
+
+These will be added **incrementally**.
+
+---
+
+## Key Takeaway
+
+If you can run:
+
+```
+docker compose --profile cpu up -d
+pytest tests/integration
+```
+
+…and the test passes — your system is correctly set up.

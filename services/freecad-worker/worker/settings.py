@@ -1,3 +1,4 @@
+import os
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
@@ -9,7 +10,7 @@ class Settings(BaseSettings):
     s3_region: str = "us-east-1"
 
     # Local LLM (llama.cpp server or vLLM OpenAI-compatible)
-    llm_base_url: str = "http://llm:8000"
+    llm_base_url: str = os.getenv('LLM_BASE_URL')
     llm_model: str | None = None  # optional, depends on backend
 
 settings = Settings()

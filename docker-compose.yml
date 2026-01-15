@@ -67,24 +67,28 @@ services:
       "
 
   llm:
+    container_name: freecad-ai-llm
+    restart: unless-stopped
     profiles: ["cpu"]
     image: ghcr.io/ggml-org/llama.cpp:server
     command: >
-      --host 0.0.0.0 --port 8000
-      --model /models/model.gguf
+      --host 0.0.0.0
+      --port 8000
+      --model /models/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf
+      --chat-template qwen2
       --threads 8
       --ctx-size 4096
     ports:
       - "8000:8000"
     volumes:
-      - models:/models
+      - ./models:/models:ro
 
   llm-cuda:
     profiles: ["gpu"]
     image: ghcr.io/ggml-org/llama.cpp:server-cuda
     command: >
       --host 0.0.0.0 --port 8000
-      --model /models/model.gguf
+      --model /models/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf
       --threads 8
       --ctx-size 4096
       --n-gpu-layers 999
@@ -120,9 +124,9 @@ services:
       - minio-init
 
 volumes:
-  pgdata:
-  artifacts_staging:
-  models:
-  hfcache:
-  ragconfig:
-  miniodata:
+  pgdata: {}
+  artifacts_staging: {}
+  models: {}
+  hfcache: {}
+  ragconfig: {}
+  miniodata: {}
