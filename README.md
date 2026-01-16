@@ -181,7 +181,65 @@ Full usage (including `--debug`) is documented in `tools/cad_agent/README.md`.
 
 ---
 
-## Testing
+## Development & Testing
+
+### Test Dependencies
+
+Integration and end-to-end tests require additional Python dependencies that are
+not part of the runtime environment.
+
+Install test dependencies with:
+
+    pip install -r tests/requirements.txt
+
+This installs tools such as:
+- pytest
+- pytest-env
+- requests (for integration tests)
+- any other test-only utilities
+
+### Running Tests (Test Profile)
+
+The project uses a dedicated Docker Compose profile for testing that includes:
+- A fake LLM service
+- Isolated ports (no host collisions)
+- Deterministic behavior for pytest
+
+Start the test stack:
+
+    docker compose --profile test build --no-cache
+    docker compose --profile test up -d
+
+Once the containers are running, execute:
+
+    pytest -vv --full-trace tests
+
+### Environment Variables for Tests
+
+The test suite reads the API base URL from:
+
+    CAD_AGENT_BASE_URL
+
+This variable is **automatically set** via `pytest.ini` using `pytest-env`.
+No wrapper scripts or extra command-line flags are required.
+
+Example (from pytest.ini):
+
+    [pytest]
+    env =
+        CAD_AGENT_BASE_URL=http://localhost:8081
+
+This ensures tests target the test-profile API instead of the default
+CPU/production profile.
+
+### Switching Between Profiles
+
+To stop the test environment and run the CPU (real LLM) profile:
+
+    docker compose --profile test down
+    docker compose --profile cpu up -d
+
+Each profile uses distinct host ports to avoid collisions.
 
 ### Integration test (real LLM)
 
