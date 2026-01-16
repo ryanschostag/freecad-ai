@@ -1,0 +1,23 @@
+version: 1
+policy:
+  default_trust_tier: 2
+  require_https: true
+  allow_domains:
+    - freecad.org
+    - wiki.freecad.org
+    - docs.freecad.org
+  deny_domains:
+    - medium.com
+    - reddit.com
+sources:
+  - source_id: freecad-wiki
+    enabled: true
+    trust_tier: 1
+    kind: crawl
+    entrypoints:
+      - "https://wiki.freecad.org/Main_Page"
+    include_patterns:
+      - "^https://wiki.freecad.org/.*"
+    exclude_patterns:
+      - "^https://wiki.freecad.org/.*\?action=edit"
+    license_note: "Verify license before reuse."

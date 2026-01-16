@@ -1,0 +1,10 @@
+services:
+  api:
+    environment:
+      - LLM_BASE_URL=http://llm-gpu:8000
+  llm-gpu:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: ["gpu"]
