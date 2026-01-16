@@ -20,6 +20,28 @@ import httpx
 
 DEFAULT_BASE_URL = os.environ.get("CAD_AGENT_BASE_URL", "http://localhost:8080")
 
+
+def _llm_ready(base_url: str) -> bool:
+    with _client() as c:
+        r = c.get(f"{base_url}/health/llm")
+        if r.status_code != 200:
+            return False
+        try:
+            data = r.json()
+        except Exception:
+            return False
+        return bool(data.get("ok"))
+
+
+def health_llm(args):
+    with _client() as c:
+        r = c.get(f"{args.base_url}/health/llm")
+        print(r.status_code)
+        try:
+            _pp(r.json())
+        except Exception:
+            print(r.text)
+
 def _client():
     return httpx.Client(timeout=60.0)
 
@@ -46,6 +68,10 @@ def session_fork(args):
         _pp(r.json())
 
 def prompt_send(args):
+    if args.llm_check:
+        if not _llm_ready(args.base_url):
+            print("LLM health check failed; refusing to enqueue.", file=sys.stderr)
+            sys.exit(2)
     payload = {
         "content": args.text,
         "mode": args.mode,
@@ -117,6 +143,12 @@ def main():
     p.add_argument("--base-url", default=DEFAULT_BASE_URL, help="API base URL (or CAD_AGENT_BASE_URL env var)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
+    # health
+    sp_health = sub.add_parser("health")
+    health_sub = sp_health.add_subparsers(dest="sub", required=True)
+    sp_h_llm = health_sub.add_parser("llm")
+    sp_h_llm.set_defaults(func=health_llm)
+
     # session
     sp_sess = sub.add_parser("session")
     sess_sub = sp_sess.add_subparsers(dest="sub", required=True)
@@ -148,6 +180,13 @@ def main():
     sp_send.add_argument("--stl", action="store_true", default=False)
     sp_send.add_argument("--wait", action="store_true", help="Poll until finished")
     sp_send.add_argument("--once", action="store_true", help="If --wait, print one poll only")
+    sp_send.add_argument(
+        "--no-llm-check",
+        dest="llm_check",
+        action="store_false",
+        default=True,
+        help="Skip calling /health/llm before enqueueing",
+    )
     sp_send.set_defaults(func=prompt_send)
 
     # job

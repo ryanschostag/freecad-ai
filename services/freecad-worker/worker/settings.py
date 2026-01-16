@@ -13,4 +13,7 @@ class Settings(BaseSettings):
     llm_base_url: str = os.getenv('LLM_BASE_URL')
     llm_model: str | None = None  # optional, depends on backend
 
+    # API used for internal callbacks (persist job status/results outside Redis)
+    api_base_url: str = os.getenv('API_BASE_URL', 'http://api:8080')
+
 settings = Settings()

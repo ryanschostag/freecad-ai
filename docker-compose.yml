@@ -8,6 +8,7 @@ services:
       - ARTIFACT_STAGING_DIR=/artifacts_staging
       - RAG_SOURCES_CONFIG=/config/rag_sources.yaml
       - LLM_BASE_URL=http://llm:8000
+      - API_BASE_URL=http://api:8080
       - REDIS_URL=redis://redis:6379/0
 
       # MinIO (S3-compatible)
@@ -104,12 +105,26 @@ services:
               count: all
               capabilities: [gpu]
 
+  llm-fake:
+    container_name: freecad-ai-llm
+    restart: unless-stopped
+    profiles: ["test"]
+    image: python:3.11-slim
+    working_dir: /app
+    command: >
+      sh -c "pip install --no-cache-dir fastapi==0.115.0 uvicorn==0.30.6 && uvicorn fake_llm_server:app --host 0.0.0.0 --port 8000"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./tools:/app:ro
+
   freecad-worker:
     build: ./services/freecad-worker
     environment:
       - DATABASE_URL=postgresql+psycopg://cad:cad@db:5432/cad
       - REDIS_URL=redis://redis:6379/0
       - LLM_BASE_URL=http://llm:8000
+      - API_BASE_URL=http://api:8080
       - S3_ENDPOINT=http://minio:9000
       - S3_ACCESS_KEY=minioadmin
       - S3_SECRET_KEY=minioadmin

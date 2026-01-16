@@ -2,14 +2,40 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
+import httpx
 from sqlalchemy.orm import Session
 from app.db import get_db
 from app import models
 from app.schemas import CreateSessionRequest
 from app.utils import upsert_time
 from app.queue import get_queue
+from app.settings import Settings
 
 router = APIRouter()
+
+
+async def ensure_llm_ready() -> None:
+    """Fail fast if the configured LLM is not reachable.
+
+    The local llama.cpp server may or may not expose a dedicated /health endpoint
+    depending on build flags. We try a small set of common endpoints.
+    """
+    settings = Settings()
+    base = (settings.llm_base_url or "").rstrip("/")
+    if not base:
+        raise HTTPException(status_code=503, detail="LLM_BASE_URL is not configured")
+
+    candidates = [f"{base}/health", f"{base}/v1/models", f"{base}/"]
+    timeout = httpx.Timeout(2.0, connect=2.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        for url in candidates:
+            try:
+                r = await client.get(url)
+                if 200 <= r.status_code < 300:
+                    return
+            except Exception:
+                continue
+    raise HTTPException(status_code=503, detail=f"LLM is not ready at {base}")
 
 @router.post("/sessions", status_code=201)
 def create_session(req: CreateSessionRequest | None = None, db: Session = Depends(get_db)):
@@ -53,7 +79,7 @@ def fork_session(session_id: str, db: Session = Depends(get_db)):
             "created_at": child.created_at.isoformat(), "closed_at": None}
 
 @router.post("/sessions/{session_id}/messages", status_code=202)
-def post_message(session_id: str, payload: dict, db: Session = Depends(get_db)):
+async def post_message(session_id: str, payload: dict, db: Session = Depends(get_db)):
     s = db.query(models.DimSession).filter(models.DimSession.session_id==session_id).one_or_none()
     if not s: raise HTTPException(404, "session not found")
     if s.status=="closed": raise HTTPException(409, "session is closed")
@@ -74,6 +100,9 @@ def post_message(session_id: str, payload: dict, db: Session = Depends(get_db)):
                            payload_json={"message_id": user_message_id, "mode": mode}))
     db.commit()
 
+    # Gate job enqueue on LLM readiness so clients fail fast instead of hanging.
+    await ensure_llm_ready()
+
     q = get_queue("freecad")
     job_id = str(uuid.uuid4())
 
@@ -90,25 +119,6 @@ def post_message(session_id: str, payload: dict, db: Session = Depends(get_db)):
             "tolerance_mm": tolerance_mm,
             "max_repair_iterations": 3,
             "timeout_seconds": 300,
-        },
-        job_id=job_id,
-        result_ttl=3600,
-        failure_ttl=3600,
-    )
-
-    job = q.enqueue_call(
-        "worker.jobs.run_repair_loop_job",
-        kwargs={
-            "job_id": job_id,
-            "session_id": session_id,
-            "user_message_id": user_message_id,
-            "prompt": content,
-            "mode": mode,
-            "export": export,
-            "units": units,
-            "tolerance_mm": tolerance_mm,
-            "max_repair_iterations": 3,
-            "timeout_seconds": 300
         },
         job_id=job_id,
         result_ttl=3600,

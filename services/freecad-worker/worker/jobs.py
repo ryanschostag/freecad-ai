@@ -8,9 +8,47 @@ import tempfile
 from datetime import datetime, timezone
 from typing import Any
 
+import httpx
+
 from worker.storage import put_object
 from worker.llm import chat
 from worker.prompts import build_generate_prompt, build_repair_prompt
+from worker.settings import settings
+
+
+def _notify_api_started(job_id: str) -> None:
+    """Persist queued -> started outside Redis.
+
+    This is best-effort; job execution should continue even if the API is down.
+    """
+    try:
+        url = f"{settings.api_base_url.rstrip('/')}/internal/jobs/{job_id}/started"
+        httpx.post(url, json={"ts": datetime.now(timezone.utc).isoformat()}, timeout=2.0)
+    except Exception:
+        # Best-effort: ignore
+        return
+
+
+def _notify_api_complete(
+    job_id: str,
+    status: str,
+    result: dict[str, Any] | None,
+    error: dict[str, Any] | None,
+    artifacts: list[dict[str, Any]] | None,
+) -> None:
+    """Persist started -> finished/failed and the final result outside Redis."""
+    try:
+        url = f"{settings.api_base_url.rstrip('/')}/internal/jobs/{job_id}/complete"
+        payload = {
+            "status": status,
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "result": result,
+            "error": error,
+            "artifacts": artifacts or [],
+        }
+        httpx.post(url, json=payload, timeout=10.0)
+    except Exception:
+        return
 
 def _sha256(b: bytes) -> str:
     h = hashlib.sha256(); h.update(b); return h.hexdigest()
@@ -224,65 +262,121 @@ def run_repair_loop_job(
     timeout_seconds: int = 300,
 ) -> dict:
     ts = datetime.now(timezone.utc).isoformat()
+    _notify_api_started(job_id)
 
     artifacts: list[dict[str, Any]] = []
-
-    # 1) Generate macro from local LLM
-    messages = build_generate_prompt(prompt, mode, units, tolerance_mm)
-    macro_code = chat(messages)
-
-    macro_bytes = macro_code.encode("utf-8")
-    macro_key = f"sessions/{session_id}/macros/{user_message_id}.gen0.py"
-    put_object(macro_key, macro_bytes, content_type="text/x-python")
-    artifacts.append({"kind":"freecad_macro_py","object_key":macro_key,"sha256":_sha256(macro_bytes),"bytes":len(macro_bytes)})
-
-    last_stdout = ""
-    last_stderr = ""
     issues: list[dict[str, Any]] = []
-    passed = False
 
-    for i in range(max_repair_iterations):
-        passed, issues, produced_files, out, err = _run_freecad_headless(
-            macro_code,
-            export,
-            timeout_seconds,
+    try:
+        # 1) Generate macro from local LLM
+        messages = build_generate_prompt(prompt, mode, units, tolerance_mm)
+        macro_code = chat(messages)
+
+        macro_bytes = macro_code.encode("utf-8")
+        macro_key = f"sessions/{session_id}/macros/{user_message_id}.gen0.py"
+        put_object(macro_key, macro_bytes, content_type="text/x-python")
+        artifacts.append(
+            {
+                "kind": "freecad_macro_py",
+                "object_key": macro_key,
+                "sha256": _sha256(macro_bytes),
+                "bytes": len(macro_bytes),
+            }
         )
-        last_stdout, last_stderr = out, err
 
-        report = {
+        for i in range(max_repair_iterations):
+            passed, issues, produced_files, out, err = _run_freecad_headless(
+                macro_code,
+                export,
+                timeout_seconds,
+            )
+
+            report = {
+                "job_id": job_id,
+                "session_id": session_id,
+                "user_message_id": user_message_id,
+                "iteration_index": i,
+                "passed": passed,
+                "issues": issues,
+                "stdout_tail": (out or "")[-5000:],
+                "stderr_tail": (err or "")[-5000:],
+                "ts": datetime.now(timezone.utc).isoformat(),
+            }
+            report_bytes = json.dumps(report, indent=2).encode("utf-8")
+            report_key = f"sessions/{session_id}/reports/{user_message_id}.validation.{i}.json"
+            put_object(report_key, report_bytes, "application/json")
+            artifacts.append(
+                {
+                    "kind": "validation_report_json",
+                    "object_key": report_key,
+                    "sha256": _sha256(report_bytes),
+                    "bytes": len(report_bytes),
+                }
+            )
+
+            # Upload produced files (if any)
+            for name, data in produced_files.items():
+                k = f"sessions/{session_id}/artifacts/{user_message_id}/iter{i}/{name}"
+                put_object(k, data, content_type="application/octet-stream")
+                kind = (
+                    "freecad_fcstd"
+                    if name.lower().endswith(".fcstd")
+                    else ("cad_step" if name.lower().endswith(".step") else "mesh_stl")
+                )
+                artifacts.append(
+                    {
+                        "kind": kind,
+                        "object_key": k,
+                        "sha256": _sha256(data),
+                        "bytes": len(data),
+                    }
+                )
+
+            if passed:
+                result = {
+                    "job_id": job_id,
+                    "session_id": session_id,
+                    "user_message_id": user_message_id,
+                    "passed": True,
+                    "iterations": i + 1,
+                    "issues": issues,
+                    "artifacts": artifacts,
+                    "ts": ts,
+                }
+                _notify_api_complete(job_id, status="finished", result=result, error=None)
+                return result
+
+            # 2) Repair using constraint-aware prompt
+            repair_msgs = build_repair_prompt(prompt, macro_code, issues, units, tolerance_mm)
+            macro_code = chat(repair_msgs)
+
+            macro_bytes = macro_code.encode("utf-8")
+            macro_key = f"sessions/{session_id}/macros/{user_message_id}.repair{i+1}.py"
+            put_object(macro_key, macro_bytes, content_type="text/x-python")
+            artifacts.append(
+                {
+                    "kind": "freecad_macro_py",
+                    "object_key": macro_key,
+                    "sha256": _sha256(macro_bytes),
+                    "bytes": len(macro_bytes),
+                }
+            )
+
+        # Exhausted repair attempts
+        result = {
             "job_id": job_id,
             "session_id": session_id,
             "user_message_id": user_message_id,
-            "iteration_index": i,
-            "passed": passed,
+            "passed": False,
+            "iterations": max_repair_iterations,
             "issues": issues,
-            "stdout_tail": (out or "")[-5000:],
-            "stderr_tail": (err or "")[-5000:],
-            "ts": datetime.now(timezone.utc).isoformat(),
+            "artifacts": artifacts,
+            "ts": ts,
         }
-        report_key = f"sessions/{session_id}/reports/{user_message_id}.validation.{i}.json"
-        put_object(report_key, json.dumps(report, indent=2).encode("utf-8"), "application/json")
-        artifacts.append({"kind":"validation_report_json","object_key":report_key,"sha256":_sha256(json.dumps(report).encode('utf-8')),"bytes":len(json.dumps(report).encode('utf-8'))})
+        _notify_api_complete(job_id, status="finished", result=result, error=None)
+        return result
 
-        # Upload produced files (if any)
-        for name, data in produced_files.items():
-            k = f"sessions/{session_id}/artifacts/{user_message_id}/iter{i}/{name}"
-            put_object(k, data, content_type="application/octet-stream")
-            kind = "freecad_fcstd" if name.lower().endswith(".fcstd") else ("cad_step" if name.lower().endswith(".step") else "mesh_stl")
-            artifacts.append({"kind": kind, "object_key": k, "sha256": _sha256(data), "bytes": len(data)})
-
-        if passed:
-            return {"job_id": job_id, "session_id": session_id, "user_message_id": user_message_id,
-                    "passed": True, "iterations": i+1, "issues": issues, "artifacts": artifacts, "ts": ts}
-
-        # 2) Repair using constraint-aware prompt
-        repair_msgs = build_repair_prompt(prompt, macro_code, issues, units, tolerance_mm)
-        macro_code = chat(repair_msgs)
-
-        macro_bytes = macro_code.encode("utf-8")
-        macro_key = f"sessions/{session_id}/macros/{user_message_id}.repair{i+1}.py"
-        put_object(macro_key, macro_bytes, content_type="text/x-python")
-        artifacts.append({"kind":"freecad_macro_py","object_key":macro_key,"sha256":_sha256(macro_bytes),"bytes":len(macro_bytes)})
-
-    return {"job_id": job_id, "session_id": session_id, "user_message_id": user_message_id,
-            "passed": False, "iterations": max_repair_iterations, "issues": issues, "artifacts": artifacts, "ts": ts}
+    except Exception as e:
+        err_payload = {"message": str(e), "type": e.__class__.__name__}
+        _notify_api_complete(job_id, status="failed", result=None, error=err_payload)
+        raise
