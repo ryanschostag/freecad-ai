@@ -190,7 +190,10 @@ services:
       - minio
       - minio-init
       - llm-fake
-      - api-test
+
+    # NOTE: Do not depend_on api-test here.
+    # api-test already depends_on freecad-worker-test (so `--profile test up` starts both).
+    # Having both depend on each other creates a Compose dependency cycle.
 
 volumes:
   pgdata: {}
