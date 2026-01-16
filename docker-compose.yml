@@ -1,5 +1,6 @@
 services:
   api:
+    profiles: ["cpu", "gpu"]
     build: ./services/api
     ports:
       - "8080:8080"
@@ -27,6 +28,34 @@ services:
       - minio
       - minio-init
       - freecad-worker
+
+  api-test:
+    profiles: ["test"]
+    build: ./services/api
+    ports:
+      - "8081:8080"
+    environment:
+      - DATABASE_URL=postgresql+psycopg://cad:cad@db:5432/cad
+      - STORAGE_MODE=minio
+      - ARTIFACT_STAGING_DIR=/artifacts_staging
+      - RAG_SOURCES_CONFIG=/config/rag_sources.yaml
+      - LLM_BASE_URL=http://llm-fake:8000
+      - API_BASE_URL=http://api-test:8080
+      - REDIS_URL=redis://redis:6379/0
+      - S3_ENDPOINT=http://minio:9000
+      - S3_ACCESS_KEY=minioadmin
+      - S3_SECRET_KEY=minioadmin
+      - S3_BUCKET=cad-artifacts
+      - S3_REGION=us-east-1
+    volumes:
+      - artifacts_staging:/artifacts_staging
+      - ragconfig:/config
+    depends_on:
+      - db
+      - redis
+      - minio
+      - minio-init
+      - freecad-worker-test
 
   db:
     image: pgvector/pgvector:pg16
@@ -106,7 +135,7 @@ services:
               capabilities: [gpu]
 
   llm-fake:
-    container_name: freecad-ai-llm
+    container_name: freecad-ai-llm-fake
     restart: unless-stopped
     profiles: ["test"]
     image: python:3.11-slim
@@ -114,15 +143,13 @@ services:
     command: >
       sh -c "pip install --no-cache-dir fastapi==0.115.0 uvicorn==0.30.6 && uvicorn fake_llm_server:app --host 0.0.0.0 --port 8000"
     ports:
-      - "8000:8000"
+      - "8001:8000"
     volumes:
       - ./tools:/app:ro
-    networks:
-      default:
-        aliases:
-          - llm
+    # No network aliases; test services use LLM_BASE_URL=http://llm-fake:8000
 
   freecad-worker:
+    profiles: ["cpu", "gpu"]
     build: ./services/freecad-worker
     environment:
       - DATABASE_URL=postgresql+psycopg://cad:cad@db:5432/cad
@@ -141,6 +168,29 @@ services:
       - redis
       - minio
       - minio-init
+
+  freecad-worker-test:
+    profiles: ["test"]
+    build: ./services/freecad-worker
+    environment:
+      - DATABASE_URL=postgresql+psycopg://cad:cad@db:5432/cad
+      - REDIS_URL=redis://redis:6379/0
+      - LLM_BASE_URL=http://llm-fake:8000
+      - API_BASE_URL=http://api-test:8080
+      - S3_ENDPOINT=http://minio:9000
+      - S3_ACCESS_KEY=minioadmin
+      - S3_SECRET_KEY=minioadmin
+      - S3_BUCKET=cad-artifacts
+      - S3_REGION=us-east-1
+    volumes:
+      - artifacts_staging:/artifacts_staging
+    depends_on:
+      - db
+      - redis
+      - minio
+      - minio-init
+      - llm-fake
+      - api-test
 
 volumes:
   pgdata: {}
