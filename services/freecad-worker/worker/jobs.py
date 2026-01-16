@@ -34,7 +34,7 @@ def _notify_api_complete(
     status: str,
     result: dict[str, Any] | None,
     error: dict[str, Any] | None,
-    artifacts: list[dict[str, Any]] | None,
+    artifacts: list[dict[str, Any]] | None = None,
 ) -> None:
     """Persist started -> finished/failed and the final result outside Redis."""
     try:

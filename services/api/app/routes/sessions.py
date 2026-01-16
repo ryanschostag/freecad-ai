@@ -121,6 +121,10 @@ async def post_message(session_id: str, payload: dict, db: Session = Depends(get
             "timeout_seconds": 300,
         },
         job_id=job_id,
+        # NOTE: RQ's Queue.enqueue_call uses `timeout` (seconds) for the job
+        # execution limit. `job_timeout` is not a valid kwarg for our pinned
+        # rq version and causes a 500/TypeError at enqueue time.
+        timeout=300,
         result_ttl=3600,
         failure_ttl=3600,
     )
