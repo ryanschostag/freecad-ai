@@ -167,22 +167,17 @@ A successful job eventually returns `finished`.
 
 ## CLI Tool
 
-`tools/cad_agent_cli.py` can be used to create sessions and enqueue jobs.
+The CLI lives at `tools/cad_agent/cad_agent_cli.py`.
 
 Example:
 
 ```
-python tools/cad_agent_cli.py session create \
+python tools/cad_agent/cad_agent_cli.py session create \
   --title "test session" \
   --project-id "1234"
 ```
 
-The CLI currently assumes:
-
-* API is reachable
-* LLM is healthy
-
-(Health checks will be added later.)
+Full usage (including `--debug`) is documented in `tools/cad_agent/README.md`.
 
 ---
 
