@@ -156,7 +156,8 @@ def cmd_message_send(client: ApiClient, args: argparse.Namespace) -> int:
 
 
 def cmd_job_get(client: ApiClient, args: argparse.Namespace) -> int:
-        code, body = client.request("GET", f"/v1/jobs/{job_id}")
+    job_id = args.job_id
+    code, body = client.request("GET", f"/v1/jobs/{job_id}")
     _print(body)
     return 0 if code == 200 else 1
 
@@ -281,8 +282,22 @@ def build_parser() -> argparse.ArgumentParser:
     jwait.add_argument("--job", dest="job", help="Job id (alias for positional JOB_ID)")
 
     # Polling controls
-    jwait.add_argument("--poll-s", "--interval-s", dest="poll_s", default=1.0, type=float)
-    jwait.add_argument("--max-wait-s", "--timeout-seconds", dest="max_wait_s", default=300.0, type=float)
+    jwait.add_argument(
+        "--poll-s",
+        "--interval-s",
+        "--poll-seconds",
+        dest="poll_s",
+        default=1.0,
+        type=float,
+    )
+    jwait.add_argument(
+        "--max-wait-s",
+        "--timeout-seconds",
+        "--max-wait-seconds",
+        dest="max_wait_s",
+        default=300.0,
+        type=float,
+    )
     jwait.set_defaults(func=cmd_job_wait)
 
     # debug
