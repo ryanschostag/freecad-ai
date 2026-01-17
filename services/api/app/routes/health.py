@@ -11,7 +11,9 @@ router = APIRouter()
 
 @router.get("/health")
 def health():
-    return {"ok": True}
+    # Backwards-compatible health payload. Some tests/clients expect
+    # `{"status": "ok"}` while others expect `{"ok": True}`.
+    return {"ok": True, "status": "ok"}
 
 
 @router.get("/health/llm")

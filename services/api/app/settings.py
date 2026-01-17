@@ -1,6 +1,8 @@
 from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
-    database_url: str = "postgresql+psycopg://cad:cad@db:5432/cad"
+    # Default to localhost so running `pytest` from the host works.
+    # docker-compose.yml overrides this to `@db:5432` for in-container use.
+    database_url: str = "postgresql+psycopg://cad:cad@localhost:5432/cad"
     artifact_staging_dir: str = "/artifacts_staging"
     rag_sources_config: str = "/config/rag_sources.yaml"
     llm_base_url: str = "http://llm:8000"
