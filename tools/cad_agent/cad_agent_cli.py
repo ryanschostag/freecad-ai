@@ -156,16 +156,20 @@ def cmd_message_send(client: ApiClient, args: argparse.Namespace) -> int:
 
 
 def cmd_job_get(client: ApiClient, args: argparse.Namespace) -> int:
-    code, body = client.request("GET", f"/v1/jobs/{args.job_id}")
+        code, body = client.request("GET", f"/v1/jobs/{job_id}")
     _print(body)
     return 0 if code == 200 else 1
 
 
 def cmd_job_wait(client: ApiClient, args: argparse.Namespace) -> int:
+    job_id = getattr(args, "job", None) or getattr(args, "job_id", None)
+    if not job_id:
+        raise SystemExit("job wait: missing job id (use positional JOB_ID or --job JOB_ID)")
+
     deadline = time.time() + float(args.max_wait_s)
     last: Any = None
     while time.time() < deadline:
-        code, body = client.request("GET", f"/v1/jobs/{args.job_id}")
+        code, body = client.request("GET", f"/v1/jobs/{job_id}")
         last = body
         if code != 200:
             _print(body)
@@ -271,9 +275,14 @@ def build_parser() -> argparse.ArgumentParser:
     jget.set_defaults(func=cmd_job_get)
 
     jwait = js.add_parser("wait", help="poll job until finished/failed")
-    jwait.add_argument("job_id")
-    jwait.add_argument("--poll-s", default=1.0, type=float)
-    jwait.add_argument("--max-wait-s", default=300.0, type=float)
+    # Accept both a positional job id and the more explicit --job flag, since
+    # older docs/notes used the flag form.
+    jwait.add_argument("job_id", nargs="?", help="Job id")
+    jwait.add_argument("--job", dest="job", help="Job id (alias for positional JOB_ID)")
+
+    # Polling controls
+    jwait.add_argument("--poll-s", "--interval-s", dest="poll_s", default=1.0, type=float)
+    jwait.add_argument("--max-wait-s", "--timeout-seconds", dest="max_wait_s", default=300.0, type=float)
     jwait.set_defaults(func=cmd_job_wait)
 
     # debug

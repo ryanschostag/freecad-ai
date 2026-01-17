@@ -348,7 +348,11 @@ def run_repair_loop_job(
 
             # 2) Repair using constraint-aware prompt
             repair_msgs = build_repair_prompt(prompt, macro_code, issues, units, tolerance_mm)
-            macro_code = chat(repair_msgs)
+            # Keep the LLM request timeout shorter than the overall job timeout
+            # so we can fail gracefully instead of RQ killing the job.
+            llm_timeout_s = max(5, int(timeout_seconds) - 30)
+            llm_timeout_s = min(llm_timeout_s, int(settings.llm_request_timeout_seconds))
+            macro_code = chat(repair_msgs, timeout_s=float(llm_timeout_s))
 
             macro_bytes = macro_code.encode("utf-8")
             macro_key = f"sessions/{session_id}/macros/{user_message_id}.repair{i+1}.py"

@@ -10,8 +10,13 @@ class Settings(BaseSettings):
     s3_region: str = "us-east-1"
 
     # Local LLM (llama.cpp server or vLLM OpenAI-compatible)
-    llm_base_url: str = os.getenv('LLM_BASE_URL')
+    # Default matches docker-compose service name.
+    llm_base_url: str = os.getenv('LLM_BASE_URL', 'http://llm:8000')
     llm_model: str | None = None  # optional, depends on backend
+
+    # LLM request timeouts (seconds)
+    llm_request_timeout_seconds: int = int(os.getenv('LLM_REQUEST_TIMEOUT_SECONDS', '180'))
+    llm_connect_timeout_seconds: int = int(os.getenv('LLM_CONNECT_TIMEOUT_SECONDS', '10'))
 
     # API used for internal callbacks (persist job status/results outside Redis)
     api_base_url: str = os.getenv('API_BASE_URL', 'http://api:8080')

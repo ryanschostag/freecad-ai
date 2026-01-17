@@ -103,6 +103,13 @@ async def post_message(session_id: str, payload: dict, db: Session = Depends(get
     # Gate job enqueue on LLM readiness so clients fail fast instead of hanging.
     await ensure_llm_ready()
 
+    # Allow callers to override how long the job is allowed to run.
+    # We add a small buffer to the RQ job timeout so internal timeouts
+    # (LLM call / FreeCAD exec) can fail cleanly first.
+    settings = Settings()
+    timeout_seconds = int(payload.get("timeout_seconds") or settings.default_job_timeout_seconds)
+    rq_timeout_seconds = timeout_seconds + settings.job_timeout_buffer_seconds
+
     q = get_queue("freecad")
     job_id = str(uuid.uuid4())
 
@@ -118,13 +125,13 @@ async def post_message(session_id: str, payload: dict, db: Session = Depends(get
             "units": units,
             "tolerance_mm": tolerance_mm,
             "max_repair_iterations": 3,
-            "timeout_seconds": 300,
+            "timeout_seconds": timeout_seconds,
         },
         job_id=job_id,
         # NOTE: RQ's Queue.enqueue_call uses `timeout` (seconds) for the job
         # execution limit. `job_timeout` is not a valid kwarg for our pinned
         # rq version and causes a 500/TypeError at enqueue time.
-        timeout=300,
+        timeout=rq_timeout_seconds,
         result_ttl=3600,
         failure_ttl=3600,
     )
