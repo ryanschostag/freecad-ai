@@ -79,6 +79,54 @@ def get_job(job_id: str, db: Session = Depends(get_db)):
             rec.result_json = result
             rec.error_json = {}
 
+        # Record a completion fact (LLM output) once per message.
+        # The worker returns artifacts (including generated macro code) but does not
+        # write directly to the API database. Persisting this here ensures metrics
+        # reflect both prompts and completions for end-to-end tests.
+        if session_id and user_message_id:
+            existing_completion = (
+                db.query(models.FactCompletion)
+                .filter(models.FactCompletion.session_id == session_id)
+                .filter(models.FactCompletion.message_id == user_message_id)
+                .one_or_none()
+            )
+            if existing_completion is None:
+                arts_for_chars = (result.get("artifacts") or [])
+                # Best-effort estimate of LLM output size: use the largest generated macro artifact.
+                output_chars = 0
+                for a in arts_for_chars:
+                    if a.get("kind") == "freecad_macro_py":
+                        try:
+                            output_chars = max(output_chars, int(a.get("bytes") or 0))
+                        except Exception:
+                            continue
+                try:
+                    iterations = int(result.get("iterations") or 0)
+                except Exception:
+                    iterations = 0
+
+                # Ensure the default model exists to avoid FK issues in fresh DBs.
+                default_model_id = "cpu-default"
+                model_row = (
+                    db.query(models.DimModel)
+                    .filter(models.DimModel.model_id == default_model_id)
+                    .one_or_none()
+                )
+                if model_row is None:
+                    db.add(models.DimModel(model_id=default_model_id, name=default_model_id, provider="local"))
+
+                db.add(
+                    models.FactCompletion(
+                        session_id=session_id,
+                        model_id=default_model_id,
+                        time_id=time_id,
+                        message_id=user_message_id,
+                        output_chars=output_chars,
+                        latency_ms=None,
+                        repair_iterations=max(0, iterations - 1),
+                    )
+                )
+
         # Persist validation + issues and artifacts if result follows expected schema
         passed = bool(result.get("passed"))
         iterations = int(result.get("iterations", 0))

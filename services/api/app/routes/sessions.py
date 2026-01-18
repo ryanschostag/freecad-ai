@@ -26,18 +26,12 @@ async def ensure_llm_ready() -> None:
         raise HTTPException(status_code=503, detail="LLM_BASE_URL is not configured")
 
     candidates = [f"{base}/health", f"{base}/v1/models", f"{base}/"]
-
-    # The docker *test* profile uses a lightweight fake LLM server.
-    # It might not implement the exact same endpoints as the real server.
-    # For readiness, a successful TCP/HTTP response (even 404) is enough.
-    timeout = httpx.Timeout(Settings().llm_health_timeout_seconds, connect=Settings().llm_health_timeout_seconds)
+    timeout = httpx.Timeout(2.0, connect=2.0)
     async with httpx.AsyncClient(timeout=timeout) as client:
         for url in candidates:
             try:
                 r = await client.get(url)
-                # Treat *any* non-5xx response as "server is up".
-                # (Fake servers often return 404 for /health, but are still reachable.)
-                if r.status_code < 500:
+                if 200 <= r.status_code < 300:
                     return
             except Exception:
                 continue

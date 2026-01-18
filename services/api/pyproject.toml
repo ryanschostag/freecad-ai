@@ -25,6 +25,9 @@ test = [
 ]
 [tool.pytest.ini_options]
 testpaths = ["app/tests"]
+markers = [
+  "integration: tests that require the docker compose test profile (db/redis/worker/llm)"
+]
 
 [tool.setuptools.packages.find]
 include = ["app*"]
