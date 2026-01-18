@@ -3,6 +3,15 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     redis_url: str = "redis://redis:6379/0"
+
+    # Artifact storage backend.
+    #
+    # - "s3": store artifacts in an S3-compatible object store (MinIO/AWS S3)
+    # - "local": store artifacts on the container filesystem (useful for tests)
+    storage_backend: str = os.getenv("STORAGE_BACKEND", "s3")
+
+    # Base directory for local artifact storage when STORAGE_BACKEND=local.
+    artifact_dir: str = os.getenv("ARTIFACT_DIR", "/data/artifacts")
     s3_endpoint: str = "http://minio:9000"
     s3_access_key: str = "minioadmin"
     s3_secret_key: str = "minioadmin"
