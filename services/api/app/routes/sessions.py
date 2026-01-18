@@ -84,7 +84,7 @@ def fork_session(session_id: str, db: Session = Depends(get_db)):
     return {"session_id": child.session_id, "parent_session_id": child.parent_session_id, "status": child.status,
             "created_at": child.created_at.isoformat(), "closed_at": None}
 
-@router.post("/sessions/{session_id}/messages", status_code=200)
+@router.post("/sessions/{session_id}/messages", status_code=202)
 async def post_message(session_id: str, payload: dict, db: Session = Depends(get_db)):
     s = db.query(models.DimSession).filter(models.DimSession.session_id==session_id).one_or_none()
     if not s: raise HTTPException(404, "session not found")
