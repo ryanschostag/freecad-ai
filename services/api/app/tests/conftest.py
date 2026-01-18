@@ -12,6 +12,7 @@ We make the import robust by ensuring both the repo root and `services/api` are 
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -22,8 +23,26 @@ def _ensure_on_syspath(p: Path) -> None:
         sys.path.insert(0, s)
 
 
-# This file lives at: <repo>/services/api/app/tests/conftest.py
-REPO_ROOT = Path(__file__).resolve().parents[4]
+def _find_repo_root() -> Path:
+    env = os.getenv("REPO_ROOT")
+    if env:
+        return Path(env).resolve()
+
+    docker_root = Path("/app")
+    if docker_root.exists():
+        return docker_root.resolve()
+
+    p = Path(__file__).resolve()
+    for _ in range(12):
+        if (p / "docker-compose.yml").exists() or (p / "pyproject.toml").exists() or (p / ".git").exists():
+            return p
+        if p.parent == p:
+            break
+        p = p.parent
+    return Path(__file__).resolve().parent
+
+
+REPO_ROOT = _find_repo_root()
 API_ROOT = REPO_ROOT / "services" / "api"
 
 _ensure_on_syspath(REPO_ROOT)
