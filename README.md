@@ -5,22 +5,14 @@
 ### Profiles
 This project supports two main Docker Compose profiles:
 
-- **test**: Uses a fake LLM service for fast, deterministic pytest runs.
+- **test**: Uses a fake LLM service for fast, deterministic pytest runs inside Docker.
 - **cpu**: Uses a real local GGUF-based LLM via llama.cpp.
 
-Switch profiles with a single command:
+Switch profiles with:
 
 ```bash
 docker compose --profile test up -d
 docker compose --profile cpu up -d
-```
-
-### Test Dependencies
-
-Before running tests locally, install test-only dependencies:
-
-```bash
-pip install -r tests/requirements.txt
 ```
 
 ### Environment Variables
@@ -28,9 +20,8 @@ pip install -r tests/requirements.txt
 Key variables:
 
 - `CAD_AGENT_BASE_URL`
-  - Test profile default: `http://localhost:8081`
+  - Test profile default: `http://localhost:8081` (host access)
   - CPU profile default: `http://localhost:8080`
-  - Automatically set via `pytest.ini` when running pytest.
 
 - `LLM_BASE_URL`
   - CPU profile: `http://llm:8000`
@@ -38,7 +29,7 @@ Key variables:
 
 ### MinIO Credentials
 
-Default MinIO credentials **must be changed**.
+Default MinIO credentials should be changed.
 
 Update in `.env` or environment:
 
@@ -49,11 +40,8 @@ MINIO_ROOT_PASSWORD=your_password
 
 These are consumed automatically by the MinIO service.
 
-### Testing Guarantee
+## Testing
 
-The test profile mirrors CPU behavior by:
-- Identical API and worker images
-- Same queue, job state transitions, and artifact handling
-- Only the LLM backend differs
+All tests are intended to run inside Docker using the `test` profile.
 
-A passing pytest run is required before CPU deployment.
+See `docs/testing.md` for the canonical testing workflow, including how to run tests via the `test-runner` container in local development and CI.
