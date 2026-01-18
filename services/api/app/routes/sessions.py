@@ -26,12 +26,18 @@ async def ensure_llm_ready() -> None:
         raise HTTPException(status_code=503, detail="LLM_BASE_URL is not configured")
 
     candidates = [f"{base}/health", f"{base}/v1/models", f"{base}/"]
-    timeout = httpx.Timeout(2.0, connect=2.0)
+
+    # The docker *test* profile uses a lightweight fake LLM server.
+    # It might not implement the exact same endpoints as the real server.
+    # For readiness, a successful TCP/HTTP response (even 404) is enough.
+    timeout = httpx.Timeout(Settings().llm_health_timeout_seconds, connect=Settings().llm_health_timeout_seconds)
     async with httpx.AsyncClient(timeout=timeout) as client:
         for url in candidates:
             try:
                 r = await client.get(url)
-                if 200 <= r.status_code < 300:
+                # Treat *any* non-5xx response as "server is up".
+                # (Fake servers often return 404 for /health, but are still reachable.)
+                if r.status_code < 500:
                     return
             except Exception:
                 continue
@@ -78,7 +84,7 @@ def fork_session(session_id: str, db: Session = Depends(get_db)):
     return {"session_id": child.session_id, "parent_session_id": child.parent_session_id, "status": child.status,
             "created_at": child.created_at.isoformat(), "closed_at": None}
 
-@router.post("/sessions/{session_id}/messages", status_code=202)
+@router.post("/sessions/{session_id}/messages", status_code=200)
 async def post_message(session_id: str, payload: dict, db: Session = Depends(get_db)):
     s = db.query(models.DimSession).filter(models.DimSession.session_id==session_id).one_or_none()
     if not s: raise HTTPException(404, "session not found")

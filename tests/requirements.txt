@@ -1,3 +1,22 @@
+# Test runner / plugins
 pytest
 pytest-env
+pytest-asyncio
+
+# HTTP client used by tests (integration + CLI)
 requests
+
+# API service deps (needed so `from app.main import app` works when running pytest locally)
+fastapi
+uvicorn[standard]
+sqlalchemy
+pgvector
+psycopg[binary]
+pydantic
+pydantic-settings
+pyyaml
+httpx
+redis
+rq
+boto3
+alembic
