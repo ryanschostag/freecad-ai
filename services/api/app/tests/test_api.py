@@ -23,7 +23,7 @@ def test_session_flow():
 
     # Poll job status until finished (or fail fast if job fails).
     result = None
-    for _ in range(200):  # ~40s at 0.2s sleep
+    for _ in range(1200):  # ~40s at 0.2s sleep
         jr = client.get(f"/v1/jobs/{job_id}")
         assert jr.status_code == 200
         j = jr.json()

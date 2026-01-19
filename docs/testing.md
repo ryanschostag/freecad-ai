@@ -39,6 +39,10 @@ You can download the override file here:
 
 sandbox:/mnt/data/docker-compose.test-override.yml
 
+#### Location
+
+This is also found in the project root folder.
+
 ---
 
 ## Start the test profile
