@@ -2,6 +2,15 @@ services:
   api:
     environment:
       - LLM_BASE_URL=http://llm-gpu:8000
+      - MODEL_ID=gpu-default
+      - MODEL_BACKEND=llama.cpp
+      - MODEL_DEVICE=gpu
+
+  freecad-worker:
+    environment:
+      - MODEL_ID=gpu-default
+      - MODEL_BACKEND=llama.cpp
+      - MODEL_DEVICE=gpu
   llm-gpu:
     deploy:
       resources:

@@ -12,6 +12,11 @@ services:
       - API_BASE_URL=http://api:8080
       - REDIS_URL=redis://redis:6379/0
 
+      # Model execution metadata (persisted into dim_model for metrics)
+      - MODEL_ID=cpu-default
+      - MODEL_BACKEND=llama.cpp
+      - MODEL_DEVICE=cpu
+
       # MinIO (S3-compatible)
       - STORAGE_MODE=minio
       - S3_ENDPOINT=http://minio:9000
@@ -47,6 +52,11 @@ services:
       - S3_SECRET_KEY=${S3_SECRET_KEY:-minioadmin}
       - S3_BUCKET=cad-artifacts
       - S3_REGION=us-east-1
+
+      # Model execution metadata for the test profile
+      - MODEL_ID=test-default
+      - MODEL_BACKEND=fake-llm
+      - MODEL_DEVICE=cpu
     volumes:
       - artifacts_staging:/artifacts_staging
       - ragconfig:/config
@@ -74,6 +84,11 @@ services:
       - S3_SECRET_KEY=${S3_SECRET_KEY:-minioadmin}
       - S3_BUCKET=cad-artifacts
       - S3_REGION=us-east-1
+
+      # Keep model metadata consistent with api-test
+      - MODEL_ID=test-default
+      - MODEL_BACKEND=fake-llm
+      - MODEL_DEVICE=cpu
     volumes:
       - ./:/repo
     depends_on:
@@ -188,6 +203,10 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - LLM_BASE_URL=http://llm:8000
       - API_BASE_URL=http://api:8080
+      # Model execution metadata (persisted into dim_model for metrics)
+      - MODEL_ID=cpu-default
+      - MODEL_BACKEND=llama.cpp
+      - MODEL_DEVICE=cpu
       - S3_ENDPOINT=http://minio:9000
       - S3_ACCESS_KEY=${S3_ACCESS_KEY:-minioadmin}
       - S3_SECRET_KEY=${S3_SECRET_KEY:-minioadmin}
@@ -209,6 +228,10 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - LLM_BASE_URL=http://llm-fake:8000
       - API_BASE_URL=http://api-test:8080
+      # Model execution metadata for the test profile
+      - MODEL_ID=test-default
+      - MODEL_BACKEND=fake-llm
+      - MODEL_DEVICE=cpu
       - S3_ENDPOINT=http://minio:9000
       - S3_ACCESS_KEY=${S3_ACCESS_KEY:-minioadmin}
       - S3_SECRET_KEY=${S3_SECRET_KEY:-minioadmin}

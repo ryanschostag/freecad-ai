@@ -27,6 +27,12 @@ Key variables:
   - CPU profile: `http://llm:8000`
   - Test profile: `http://llm-fake:8000`
 
+- `MODEL_ID`, `MODEL_BACKEND`, `MODEL_DEVICE`
+  - Set by Docker Compose per profile so the API can persist accurate `dim_model` metrics.
+  - CPU profile defaults: `cpu-default` / `llama.cpp` / `cpu`
+  - Test profile defaults: `test-default` / `fake-llm` / `cpu`
+  - GPU profile defaults: `gpu-default` / `llama.cpp` / `gpu` (via `docker-compose.gpu.override.yml`)
+
 ### MinIO Credentials
 
 Default MinIO credentials should be changed.

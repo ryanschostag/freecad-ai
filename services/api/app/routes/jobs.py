@@ -105,15 +105,23 @@ def get_job(job_id: str, db: Session = Depends(get_db)):
                 except Exception:
                     iterations = 0
 
-                # Ensure the default model exists to avoid FK issues in fresh DBs.
-                default_model_id = "cpu-default"
+                # Ensure the configured model exists to avoid FK issues in fresh DBs.
+                # Model metadata is provided by Docker via environment variables.
+                default_model_id = settings.model_id
                 model_row = (
                     db.query(models.DimModel)
                     .filter(models.DimModel.model_id == default_model_id)
                     .one_or_none()
                 )
                 if model_row is None:
-                    db.add(models.DimModel(model_id=default_model_id, name=default_model_id, provider="local"))
+                    db.add(
+                        models.DimModel(
+                            model_id=default_model_id,
+                            name=default_model_id,
+                            backend=settings.model_backend,
+                            device=settings.model_device,
+                        )
+                    )
 
                 db.add(
                     models.FactCompletion(

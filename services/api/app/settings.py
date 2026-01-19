@@ -23,4 +23,10 @@ class Settings(BaseSettings):
     s3_secret_key: str = "minioadmin"
     s3_bucket: str = "cad-artifacts"
     s3_region: str = "us-east-1"
+
+    # Model execution metadata (provided by Docker for each profile)
+    # These values can be persisted into DimModel for metrics.
+    model_id: str = "cpu-default"
+    model_backend: str = "llama.cpp"
+    model_device: str = "cpu"
 settings = Settings()

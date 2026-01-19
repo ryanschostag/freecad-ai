@@ -24,6 +24,20 @@ which forces the test containers to use the MinIO credentials defined in `.env`.
 
 ---
 
+## Model execution metadata (MODEL_BACKEND / MODEL_DEVICE)
+
+The API persists a `dim_model` row for each completion metric. Rather than hardcoding
+`backend` and `device` in Python, these values come from Docker environment variables:
+
+- `MODEL_ID` (e.g. `cpu-default`, `gpu-default`, `test-default`)
+- `MODEL_BACKEND` (e.g. `llama.cpp`, `fake-llm`)
+- `MODEL_DEVICE` (e.g. `cpu`, `gpu`)
+
+These are set in `docker-compose.yml` per profile (and in `docker-compose.gpu.override.yml`
+for GPU) so metrics always reflect what actually ran.
+
+---
+
 ## Use the test override file (required)
 
 Download the override file:
