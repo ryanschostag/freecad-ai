@@ -1,13 +1,55 @@
 # Testing
 
-This project runs API and integration tests inside Docker (the `test` profile). The tests depend on Docker-only services (Postgres, Redis, workers, fake LLM, MinIO), so running pytest directly on the host is intentionally unsupported.
+This project runs API and integration tests **inside Docker** using the `test` profile.
+Tests depend on Docker-only services (Postgres, Redis, workers, fake LLM, MinIO), so
+running pytest directly on the host is intentionally unsupported.
+
+---
+
+## Required environment configuration (important)
+
+The project root `.env` file defines MinIO credentials:
+
+```
+MINIO_ROOT_USER=your_user
+MINIO_ROOT_PASSWORD=your_password
+```
+
+Because Docker Compose expands environment variables from your shell and `.env`,
+it is possible for host-level AWS/S3 variables to override MinIO credentials
+and cause test failures (for example: `InvalidAccessKeyId` during artifact upload).
+
+To prevent this, **tests must be run with the provided Docker Compose override file**,
+which forces the test containers to use the MinIO credentials defined in `.env`.
+
+---
+
+## Use the test override file (required)
+
+Download the override file:
+
+- docker-compose.test-override.yml
+
+This file ensures that `api-test`, `freecad-worker-test`, and `test-runner`
+all use the same MinIO credentials as the MinIO server.
+
+### Download link
+
+You can download the override file here:
+
+sandbox:/mnt/data/docker-compose.test-override.yml
+
+---
 
 ## Start the test profile
 
-From the repository root:
+From the repository root, run:
 
 ```bash
-docker compose --profile test up -d --build
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.test-override.yml \
+  --profile test up -d --build
 ```
 
 This starts:
@@ -18,47 +60,56 @@ This starts:
 - llm-fake
 - minio + minio-init
 
+---
+
 ## Run tests (recommended): test-runner container
 
-The `test-runner` service runs pytest inside the Docker network and installs test dependencies from `tests/requirements.txt`.
-
-Run:
+Run pytest inside Docker using the test-runner service:
 
 ```bash
-docker compose --profile test run --rm test-runner
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.test-override.yml \
+  --profile test run --rm test-runner
 ```
 
-This is the recommended approach for CI/CD because it is self-contained and produces clean stdout/stderr for logs.
+This is the recommended approach for local development and CI/CD.
 
-## Run tests (alternative): exec into api-test
-
-If you prefer to run pytest interactively inside the API container:
-
-```bash
-docker compose --profile test exec api-test sh
-```
-
-Then inside the container:
-
-```bash
-pip install -r /repo/tests/requirements.txt
-pytest -vv --full-trace
-```
-
-Notes:
-- The `test-runner` approach is preferred because it guarantees pytest and dependencies are present.
-- The API container image may not include pytest by default, depending on build configuration.
+---
 
 ## Tear down
 
 ```bash
-docker compose --profile test down
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.test-override.yml \
+  --profile test down
 ```
+
+---
 
 ## Troubleshooting
 
-- If a test cannot reach `redis`, `db`, or `llm-fake`, ensure you are running pytest inside Docker (via `test-runner` or `exec`), not on the host.
-- If MinIO bucket creation fails, check `minio` and `minio-init` container logs:
-  ```bash
-  docker compose logs minio minio-init
-  ```
+### InvalidAccessKeyId / S3 errors during tests
+
+If you see errors like:
+
+```
+InvalidAccessKeyId: The Access Key Id you provided does not exist
+```
+
+Ensure that:
+- You are using `docker-compose.test-override.yml`
+- Your `.env` file defines `MINIO_ROOT_USER` and `MINIO_ROOT_PASSWORD`
+- You are not running pytest on the host
+
+The override file prevents accidental use of host AWS credentials.
+
+---
+
+## Summary
+
+- Tests run only inside Docker
+- The `test` profile must be used
+- The override file is required to keep MinIO credentials consistent
+- `test-runner` is the preferred way to execute pytest
