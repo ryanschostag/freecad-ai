@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
 from app.routes import artifacts, health, internal_jobs, jobs, logs, rag, sessions
@@ -8,16 +10,22 @@ from app.routes import artifacts, health, internal_jobs, jobs, logs, rag, sessio
 import app.db as db
 
 
-app = FastAPI(title="CAD Agent API", version="1.1.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan.
 
+    FastAPI's `@app.on_event` startup hooks are deprecated; use lifespan.
+    Keep this resilient so pytest collection doesn't fail if db.init_db is
+    absent during refactors.
+    """
 
-@app.on_event("startup")
-def _startup_init_db() -> None:
-    # Ensure required tables/extensions exist for dev/test runs.
-    # `db.init_db` is idempotent; if it doesn't exist, fall back to no-op.
     init = getattr(db, "init_db", None)
     if callable(init):
         init()
+    yield
+
+
+app = FastAPI(title="CAD Agent API", version="1.1.0", lifespan=lifespan)
 
 
 app.include_router(health.router, prefix="/v1")

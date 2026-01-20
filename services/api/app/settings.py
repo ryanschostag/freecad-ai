@@ -1,5 +1,10 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
 class Settings(BaseSettings):
+    # Pydantic reserves some namespaces (like `model_`) for internal use.
+    # We use `model_*` fields for model execution metadata; disable the warning.
+    model_config = SettingsConfigDict(protected_namespaces=())
     # Default to localhost so running `pytest` from the host works.
     # docker-compose.yml overrides this to `@db:5432` for in-container use.
     database_url: str = "postgresql+psycopg://cad:cad@localhost:5432/cad"
@@ -29,4 +34,6 @@ class Settings(BaseSettings):
     model_id: str = "cpu-default"
     model_backend: str = "llama.cpp"
     model_device: str = "cpu"
+
+
 settings = Settings()

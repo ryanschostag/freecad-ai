@@ -95,6 +95,15 @@ This is the recommended approach for local development and CI/CD.
 
 ---
 
+## Warnings
+
+Pytest is configured via the repository root `pytest.ini`.
+This file registers the custom `integration` marker and filters a small
+set of known third-party deprecation warnings (e.g., RQ's Python 3.12
+`datetime.utcnow()` deprecation) to keep test output readable.
+
+---
+
 ## Tear down
 
 ```bash
