@@ -14,6 +14,7 @@ By default it targets:
 
 - Python 3.10+
 - `requests` installed in your local `.venv`
+- For example, you can run `pip install -r tools/cad_agent/requirements.txt`
 
 ---
 
