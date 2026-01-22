@@ -146,6 +146,58 @@ python tools/cad_agent/cad_agent_cli.py session close <SESSION_ID>
 
 ---
 
+### `session logs`
+
+Fetch structured log events for a session. This is helpful when a job is stuck in `queued`
+status — you can confirm whether the API is emitting events and whether the worker has
+started processing that session.
+
+```bash
+python tools/cad_agent/cad_agent_cli.py session logs <SESSION_ID>
+```
+
+Filter by time (ISO timestamp):
+
+```bash
+python tools/cad_agent/cad_agent_cli.py session logs <SESSION_ID> --since 2026-01-21T20:00:00Z
+```
+
+Only show the last N events (client-side):
+
+```bash
+python tools/cad_agent/cad_agent_cli.py session logs <SESSION_ID> --tail 50
+```
+
+**What it calls**
+- `GET /v1/sessions/{session_id}/logs?since=...`
+
+**Output (stdout)**
+
+```json
+{
+  "events": [
+    {
+      "event_id": "...",
+      "session_id": "...",
+      "ts": "2026-01-21T20:51:20.123456+00:00",
+      "type": "job.enqueued",
+      "payload": { "job_id": "...", "queue": "default" }
+    }
+  ]
+}
+```
+
+Field meanings:
+- `ts`: event timestamp (ISO 8601)
+- `type`: event name (e.g. `job.enqueued`, `job.started`, `llm.request`, `validation.passed`)
+- `payload`: event-specific structured data
+
+**Exit code**
+- `0` if HTTP 200
+- `1` otherwise
+
+---
+
 ### `message send`
 
 Enqueue a design/repair request for a session (this creates a background job).

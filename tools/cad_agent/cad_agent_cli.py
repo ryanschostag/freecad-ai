@@ -127,6 +127,23 @@ def cmd_session_close(client: ApiClient, args: argparse.Namespace) -> int:
     return 0 if code in (200, 204) else 1
 
 
+def cmd_session_logs(client: ApiClient, args: argparse.Namespace) -> int:
+    """Fetch structured log events for a session.
+
+    This queries the API endpoint:
+      GET /v1/sessions/{session_id}/logs?since=...
+    """
+    params: Dict[str, Any] = {}
+    if args.since:
+        params["since"] = args.since
+    code, body = client.request("GET", f"/v1/sessions/{args.session_id}/logs", params=params)
+    # Optional client-side tail.
+    if code == 200 and isinstance(body, dict) and args.tail and isinstance(body.get("events"), list):
+        body = dict(body)
+        body["events"] = body["events"][-args.tail :]
+    _print(body)
+    return 0 if code == 200 else 1
+
 def _parse_export(s: str) -> Dict[str, bool]:
     # Accept: fcstd,step,stl (comma-separated)
     enabled = {k.strip().lower() for k in s.split(",") if k.strip()}
@@ -251,6 +268,20 @@ def build_parser() -> argparse.ArgumentParser:
     sclose = ss.add_parser("close", help="close a session")
     sclose.add_argument("session_id")
     sclose.set_defaults(func=cmd_session_close)
+
+    slogs = ss.add_parser("logs", help="fetch session log events")
+    slogs.add_argument("session_id")
+    slogs.add_argument(
+        "--since",
+        help="ISO timestamp; only return events at/after this time (e.g. 2026-01-21T20:00:00Z)",
+    )
+    slogs.add_argument(
+        "--tail",
+        type=int,
+        default=0,
+        help="Only print the last N events (client-side). 0 means all events returned by the API.",
+    )
+    slogs.set_defaults(func=cmd_session_logs)
 
     # message
     pm = sub.add_parser("message", help="message operations")
