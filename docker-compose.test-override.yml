@@ -11,15 +11,27 @@
 services:
   api-test:
     environment:
+      - LLM_HTTP_TIMEOUT_S=300
+      - LLM_HTTP_CONNECT_TIMEOUT_S=10
+      - LLM_HTTP_MAX_ATTEMPTS=2
+      - LLM_HTTP_RETRY_BACKOFF_S=1.0
       - S3_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
       - S3_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin}
 
   freecad-worker-test:
     environment:
+      - LLM_HTTP_TIMEOUT_S=300
+      - LLM_HTTP_CONNECT_TIMEOUT_S=10
+      - LLM_HTTP_MAX_ATTEMPTS=2
+      - LLM_HTTP_RETRY_BACKOFF_S=1.0
       - S3_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
       - S3_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin}
 
   test-runner:
     environment:
+      - LLM_HTTP_TIMEOUT_S=300
+      - LLM_HTTP_CONNECT_TIMEOUT_S=10
+      - LLM_HTTP_MAX_ATTEMPTS=2
+      - LLM_HTTP_RETRY_BACKOFF_S=1.0
       - S3_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
       - S3_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin}

@@ -199,6 +199,10 @@ services:
     profiles: ["cpu", "gpu"]
     build: ./services/freecad-worker
     environment:
+      - LLM_HTTP_TIMEOUT_S=900
+      - LLM_HTTP_CONNECT_TIMEOUT_S=30
+      - LLM_HTTP_MAX_ATTEMPTS=5
+      - LLM_HTTP_RETRY_BACKOFF_S=1.0
       - DATABASE_URL=postgresql+psycopg://cad:cad@db:5432/cad
       - REDIS_URL=redis://redis:6379/0
       - LLM_BASE_URL=http://llm:8000

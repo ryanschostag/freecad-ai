@@ -1,6 +1,10 @@
 services:
   api:
     environment:
+      - LLM_HTTP_TIMEOUT_S=300
+      - LLM_HTTP_CONNECT_TIMEOUT_S=10
+      - LLM_HTTP_MAX_ATTEMPTS=2
+      - LLM_HTTP_RETRY_BACKOFF_S=1.0
       - LLM_BASE_URL=http://llm-gpu:8000
       - MODEL_ID=gpu-default
       - MODEL_BACKEND=llama.cpp
