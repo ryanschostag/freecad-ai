@@ -104,6 +104,27 @@ services:
       pip install --no-cache-dir -r tests/requirements.txt &&
       pytest -vv --full-trace
       "
+  web-ui:
+    profiles: ["cpu", "gpu"]
+    build: ./services/web-ui
+    ports:
+      - "3000:3000"
+    environment:
+      - API_BASE_URL=http://api:8080
+      - WEBUI_API_TIMEOUT_S=60
+    depends_on:
+      - api
+
+  web-ui-test:
+    profiles: ["test"]
+    build: ./services/web-ui
+    ports:
+      - "3001:3000"
+    environment:
+      - API_BASE_URL=http://api-test:8080
+      - WEBUI_API_TIMEOUT_S=60
+    depends_on:
+      - api-test
 
   db:
     image: pgvector/pgvector:pg16
@@ -216,6 +237,11 @@ services:
       - S3_SECRET_KEY=${S3_SECRET_KEY:-minioadmin}
       - S3_BUCKET=cad-artifacts
       - S3_REGION=us-east-1
+      - LLM_REQUEST_TIMEOUT_SECONDS=${LLM_REQUEST_TIMEOUT_SECONDS:-600}
+      - LLM_CONNECT_TIMEOUT_SECONDS=${LLM_CONNECT_TIMEOUT_SECONDS:-30}
+      - LLM_HTTP_MAX_ATTEMPTS=${LLM_HTTP_MAX_ATTEMPTS:-2}
+      - LLM_HTTP_RETRY_BACKOFF_S=${LLM_HTTP_RETRY_BACKOFF_S:-1.0}
+
     volumes:
       - artifacts_staging:/artifacts_staging
     depends_on:

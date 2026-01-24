@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>FreeCAD AI - Web UI (MVP)</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>FreeCAD AI Web UI (MVP)</h1>
+      <div class="sub">Session + Job tracker to prevent mismatched IDs</div>
+    </header>
+
+    <section class="card">
+      <h2>Session</h2>
+      <div class="row">
+        <label>Session ID (optional)</label>
+        <input id="sessionId" placeholder="paste existing session id to continue" />
+      </div>
+      <div class="row">
+        <label>Title (for create)</label>
+        <input id="sessionTitle" placeholder="itest" />
+      </div>
+      <div class="btnrow">
+        <button id="btnCreate">Create new session</button>
+        <button id="btnLoad">Load session logs</button>
+        <button id="btnFork">Fork session</button>
+      </div>
+      <div class="status">
+        <div><b>Active session:</b> <span id="activeSession">—</span></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Prompt</h2>
+      <div class="row">
+        <label>Prompt</label>
+        <textarea id="prompt" rows="4" placeholder="Create a simple box 10mm x 20mm x 5mm"></textarea>
+      </div>
+
+      <div class="grid3">
+        <div>
+          <label>Units</label>
+          <select id="units">
+            <option value="mm" selected>mm</option>
+            <option value="in">in</option>
+          </select>
+        </div>
+        <div>
+          <label>Tolerance (mm)</label>
+          <input id="tolerance" type="number" step="0.01" value="0.1" />
+        </div>
+        <div>
+          <label>Timeout (s)</label>
+          <input id="timeoutSeconds" type="number" step="1" value="300" />
+        </div>
+      </div>
+
+      <div class="row">
+        <label>Export formats</label>
+        <div class="checks">
+          <label><input type="checkbox" id="expFcstd" checked /> fcstd</label>
+          <label><input type="checkbox" id="expStep" checked /> step</label>
+          <label><input type="checkbox" id="expStl" /> stl</label>
+        </div>
+      </div>
+
+      <div class="btnrow">
+        <button id="btnSend">Send prompt</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Job Tracker</h2>
+      <div class="row">
+        <label>Job ID</label>
+        <input id="jobId" placeholder="auto-populated after send; paste to track" />
+      </div>
+      <div class="btnrow">
+        <button id="btnTrackJob">Track job</button>
+        <button id="btnStopPolling">Stop polling</button>
+      </div>
+      <pre id="jobOutput" class="output"></pre>
+    </section>
+
+    <section class="card">
+      <h2>Session Logs</h2>
+      <div class="grid2">
+        <div>
+          <label>Tail (N)</label>
+          <input id="logsTail" type="number" step="1" value="200" />
+        </div>
+        <div>
+          <label>Since (ISO8601, optional)</label>
+          <input id="logsSince" placeholder="2026-01-21T20:00:00Z" />
+        </div>
+      </div>
+      <div class="btnrow">
+        <button id="btnFetchLogs">Fetch logs</button>
+      </div>
+      <pre id="logsOutput" class="output"></pre>
+    </section>
+
+    <section class="card">
+      <h2>Artifacts</h2>
+      <div class="btnrow">
+        <button id="btnFetchArtifacts">List artifacts for session</button>
+      </div>
+      <div id="artifactsOutput"></div>
+    </section>
+
+    <section class="card">
+      <h2>Output</h2>
+      <pre id="output" class="output"></pre>
+    </section>
+
+    <footer>
+      <div>Tip: Use the tracker panel to avoid waiting on the wrong job_id.</div>
+    </footer>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
