@@ -7,6 +7,6 @@ docker compose -f docker-compose.yml -f docker-compose.test-override.yml --profi
 sleep 1
 docker cmopose --profile test up -d
 sleep 1
-docker compose --profile test run --rm test-runner | tee pytest.txt
+docker compose --profile test run --rm test-runner 
 echo Complete!
 
