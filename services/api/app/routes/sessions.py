@@ -114,10 +114,7 @@ async def post_message(session_id: str, payload: dict, db: Session = Depends(get
     job_id = str(uuid.uuid4())
 
     job = q.enqueue_call(
-        # NOTE: Our pinned rq version expects module:attribute-path style references.
-        # Using "worker.jobs.run_repair_loop_job" can serialize/resolve incorrectly and
-        # cause the worker to fail with "Invalid attribute name".
-        func="worker:jobs.run_repair_loop_job",
+        func="worker.jobs.run_repair_loop_job",
         kwargs={
             "job_id": job_id,
             "session_id": session_id,
@@ -131,9 +128,6 @@ async def post_message(session_id: str, payload: dict, db: Session = Depends(get
             "timeout_seconds": timeout_seconds,
         },
         job_id=job_id,
-        # NOTE: RQ's Queue.enqueue_call uses `timeout` (seconds) for the job
-        # execution limit. `job_timeout` is not a valid kwarg for our pinned
-        # rq version and causes a 500/TypeError at enqueue time.
         timeout=rq_timeout_seconds,
         result_ttl=3600,
         failure_ttl=3600,
