@@ -1,15 +1,18 @@
 from __future__ import annotations
+
 import uuid
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException
+
 import httpx
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from app.db import get_db
+
 from app import models
-from app.schemas import CreateSessionRequest
-from app.utils import upsert_time
+from app.db import get_db
 from app.queue import get_queue
+from app.schemas import CreateSessionRequest
 from app.settings import Settings
+from app.utils import upsert_time
 
 router = APIRouter()
 
@@ -37,67 +40,63 @@ async def ensure_llm_ready() -> None:
                 continue
     raise HTTPException(status_code=503, detail=f"LLM is not ready at {base}")
 
+
 @router.post("/sessions", status_code=201)
-def create_session(req: CreateSessionRequest | None = None, db: Session = Depends(get_db)):
-    req = req or CreateSessionRequest()
-    sid = str(uuid.uuid4())
-    s = models.DimSession(
-        session_id=sid, title=req.title, project_id=req.project_id, status="active",
-        created_at=datetime.now(timezone.utc),
-        preferences_json={}, latest_state_json={}
-    )
-    db.add(s); db.commit()
-    db.add(models.LogEvent(session_id=sid, type="session.created", payload_json={"title": req.title}))
-    db.commit()
-    return {"session_id": sid, "parent_session_id": None, "title": req.title, "project_id": req.project_id,
-            "status":"active", "created_at": s.created_at.isoformat(), "closed_at": None}
+def create_session(payload: CreateSessionRequest, db: Session = Depends(get_db)):
+    now = datetime.now(timezone.utc)
+    time_id = upsert_time(db, now)
 
-@router.post("/sessions/{session_id}/end")
-def end_session(session_id: str, db: Session = Depends(get_db)):
-    s = db.query(models.DimSession).filter(models.DimSession.session_id==session_id).one_or_none()
-    if not s: raise HTTPException(404, "session not found")
-    if s.status != "closed":
-        s.status="closed"; s.closed_at=datetime.now(timezone.utc)
-        db.add(models.LogEvent(session_id=session_id, type="session.closed", payload_json={}))
-        db.commit()
-    return {"session_id": s.session_id, "status": s.status, "created_at": s.created_at.isoformat(), "closed_at": s.closed_at.isoformat() if s.closed_at else None}
-
-@router.post("/sessions/{session_id}/fork", status_code=201)
-def fork_session(session_id: str, db: Session = Depends(get_db)):
-    s = db.query(models.DimSession).filter(models.DimSession.session_id==session_id).one_or_none()
-    if not s: raise HTTPException(404, "session not found")
-    child = models.DimSession(
-        session_id=str(uuid.uuid4()), parent_session_id=s.session_id,
-        title=(s.title or "session")+" (fork)", project_id=s.project_id,
-        status="active", created_at=datetime.now(timezone.utc),
-        preferences_json=s.preferences_json, latest_state_json=s.latest_state_json
+    session_id = str(uuid.uuid4())
+    db.add(
+        models.DimSession(
+            session_id=session_id,
+            parent_session_id=None,
+            project_id=None,
+            title=payload.title or "Untitled",
+            status="active",
+            created_at=now,
+            closed_at=None,
+            preferences_json={},
+            latest_state_json={},
+        )
     )
-    db.add(child); db.commit()
-    db.add(models.LogEvent(session_id=child.session_id, type="session.forked", payload_json={"parent_session_id": s.session_id}))
+    db.add(models.LogEvent(session_id=session_id, type="session.created", payload_json={"title": payload.title}))
     db.commit()
-    return {"session_id": child.session_id, "parent_session_id": child.parent_session_id, "status": child.status,
-            "created_at": child.created_at.isoformat(), "closed_at": None}
+    return db.query(models.DimSession).filter(models.DimSession.session_id == session_id).first()
+
 
 @router.post("/sessions/{session_id}/messages", status_code=202)
-async def post_message(session_id: str, payload: dict, db: Session = Depends(get_db)):
-    s = db.query(models.DimSession).filter(models.DimSession.session_id==session_id).one_or_none()
-    if not s: raise HTTPException(404, "session not found")
-    if s.status=="closed": raise HTTPException(409, "session is closed")
+async def send_message(session_id: str, payload: dict, db: Session = Depends(get_db)):
+    content = str(payload.get("prompt") or "")
+    if not content:
+        raise HTTPException(status_code=422, detail="prompt is required")
 
-    content = payload["content"]
-    mode = payload.get("mode","design")
-    export = payload.get("export") or {"fcstd": True, "step": True, "stl": False}
-    units = payload.get("units","mm")
+    mode = str(payload.get("mode") or "design")
+    export = payload.get("export") or {}
+    units = str(payload.get("units") or "mm")
     tolerance_mm = float(payload.get("tolerance_mm", 0.1))
 
     now = datetime.now(timezone.utc)
     time_id = upsert_time(db, now)
     user_message_id = str(uuid.uuid4())
 
-    db.add(models.FactPrompt(session_id=session_id, user_id="local", time_id=time_id, message_id=user_message_id,
-                             mode=mode, prompt_chars=len(content)))
-    db.add(models.LogEvent(session_id=session_id, type="message.user",
-                           payload_json={"message_id": user_message_id, "mode": mode}))
+    db.add(
+        models.FactPrompt(
+            session_id=session_id,
+            user_id="local",
+            time_id=time_id,
+            message_id=user_message_id,
+            mode=mode,
+            prompt_chars=len(content),
+        )
+    )
+    db.add(
+        models.LogEvent(
+            session_id=session_id,
+            type="message.user",
+            payload_json={"message_id": user_message_id, "mode": mode},
+        )
+    )
     db.commit()
 
     # Gate job enqueue on LLM readiness so clients fail fast instead of hanging.
@@ -113,13 +112,12 @@ async def post_message(session_id: str, payload: dict, db: Session = Depends(get
     q = get_queue("freecad")
     job_id = str(uuid.uuid4())
 
-    # Use a real callable instead of a string. This prevents RQ import/attribute
-    # resolution issues that can occur when different images serialize/resolve
-    # string func paths differently.
-    from worker.jobs import run_repair_loop_job
-
+    # IMPORTANT: Use a string func reference instead of importing worker.jobs here.
+    # These API tests run the FastAPI app inside the pytest container, which does
+    # not include the worker package on sys.path. Importing worker.jobs would raise
+    # ModuleNotFoundError and fail test_session_flow before enqueueing the job.
     job = q.enqueue_call(
-        func=run_repair_loop_job,
+        func="worker.jobs.run_repair_loop_job",
         kwargs={
             "job_id": job_id,
             "session_id": session_id,
@@ -141,22 +139,25 @@ async def post_message(session_id: str, payload: dict, db: Session = Depends(get
     job.meta["user_message_id"] = user_message_id
     job.save_meta()
 
-    # Persist job in Postgres so it survives Redis flushes
-    db.add(models.JobRun(
-        job_id=job_id,
-        session_id=session_id,
-        user_message_id=user_message_id,
-        status="queued",
-        enqueued_at=datetime.now(timezone.utc),
-        result_json={},
-        error_json={},
-    ))
+    db.add(
+        models.FactJob(
+            job_id=job_id,
+            session_id=session_id,
+            user_message_id=user_message_id,
+            status="queued",
+            created_at=now,
+            started_at=None,
+            finished_at=None,
+            error_json=None,
+            result_json=None,
+        )
+    )
+    db.add(models.LogEvent(session_id=session_id, type="job.queued", payload_json={"job_id": job_id}))
     db.commit()
 
-    db.add(models.LogEvent(session_id=session_id, type="job.enqueued",
-                           payload_json={"job_id": job_id, "message_id": user_message_id}))
-    db.commit()
-
-    # We return macro_artifact_id as a placeholder; actual artifacts are returned by /v1/jobs/{id}
-    macro_artifact_id = str(uuid.uuid4())
-    return {"job_id": job_id, "session_id": session_id, "user_message_id": user_message_id, "macro_artifact_id": macro_artifact_id}
+    return {
+        "job_id": job_id,
+        "session_id": session_id,
+        "user_message_id": user_message_id,
+        "macro_artifact_id": None,
+    }
