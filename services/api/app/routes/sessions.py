@@ -159,7 +159,7 @@ async def send_message(session_id: str, payload: dict, db: Session = Depends(get
     job_id = str(uuid.uuid4())
 
     job = q.enqueue_call(
-        func="worker.jobs.run_repair_loop_job",
+        func="worker.jobs:run_repair_loop_job",
         kwargs={
             "job_id": job_id,
             "session_id": session_id,
