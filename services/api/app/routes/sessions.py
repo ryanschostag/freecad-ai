@@ -113,8 +113,13 @@ async def post_message(session_id: str, payload: dict, db: Session = Depends(get
     q = get_queue("freecad")
     job_id = str(uuid.uuid4())
 
+    # Use a real callable instead of a string. This prevents RQ import/attribute
+    # resolution issues that can occur when different images serialize/resolve
+    # string func paths differently.
+    from worker.jobs import run_repair_loop_job
+
     job = q.enqueue_call(
-        func="worker.jobs.run_repair_loop_job",
+        func=run_repair_loop_job,
         kwargs={
             "job_id": job_id,
             "session_id": session_id,
