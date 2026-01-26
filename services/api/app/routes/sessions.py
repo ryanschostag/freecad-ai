@@ -181,17 +181,18 @@ async def send_message(session_id: str, payload: dict, db: Session = Depends(get
     job.meta["user_message_id"] = user_message_id
     job.save_meta()
 
+    # NOTE: The repo model is JobRun (job_runs), not FactJob.
     db.add(
-        models.FactJob(
+        models.JobRun(
             job_id=job_id,
             session_id=session_id,
             user_message_id=user_message_id,
             status="queued",
-            created_at=now,
+            enqueued_at=now,
             started_at=None,
             finished_at=None,
-            error_json=None,
-            result_json=None,
+            error_json={},
+            result_json={},
         )
     )
     db.add(models.LogEvent(session_id=session_id, type="job.queued", payload_json={"job_id": job_id}))
