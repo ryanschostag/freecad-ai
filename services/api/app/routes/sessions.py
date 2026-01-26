@@ -158,8 +158,17 @@ async def send_message(session_id: str, payload: dict, db: Session = Depends(get
     q = get_queue("freecad")
     job_id = str(uuid.uuid4())
 
+    # Prefer enqueuing a callable to avoid rq's string import/path parsing edge-cases.
+    # In some environments (e.g. cpu profile) the API container may not have the worker
+    # package available; in that case, fall back to a dotted string path.
+    try:
+        from worker.jobs import run_repair_loop_job  # type: ignore
+        rq_func = run_repair_loop_job
+    except Exception:
+        rq_func = "worker.jobs.run_repair_loop_job"
+
     job = q.enqueue_call(
-        func="worker.jobs:run_repair_loop_job",
+        func=rq_func,
         kwargs={
             "job_id": job_id,
             "session_id": session_id,
