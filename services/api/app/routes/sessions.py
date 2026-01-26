@@ -41,10 +41,17 @@ async def ensure_llm_ready() -> None:
     raise HTTPException(status_code=503, detail=f"LLM is not ready at {base}")
 
 
+def _get_session_or_404(db: Session, session_id: str) -> models.DimSession:
+    s = db.query(models.DimSession).filter(models.DimSession.session_id == session_id).first()
+    if not s:
+        raise HTTPException(status_code=404, detail="session not found")
+    return s
+
+
 @router.post("/sessions", status_code=201)
 def create_session(payload: CreateSessionRequest, db: Session = Depends(get_db)):
     now = datetime.now(timezone.utc)
-    time_id = upsert_time(db, now)
+    upsert_time(db, now)
 
     session_id = str(uuid.uuid4())
     db.add(
@@ -65,11 +72,53 @@ def create_session(payload: CreateSessionRequest, db: Session = Depends(get_db))
     return db.query(models.DimSession).filter(models.DimSession.session_id == session_id).first()
 
 
+@router.post("/sessions/{session_id}/fork", status_code=201)
+def fork_session(session_id: str, db: Session = Depends(get_db)):
+    parent = _get_session_or_404(db, session_id)
+    if parent.status != "active":
+        raise HTTPException(status_code=409, detail="session is not active")
+
+    now = datetime.now(timezone.utc)
+    upsert_time(db, now)
+
+    child_id = str(uuid.uuid4())
+    db.add(
+        models.DimSession(
+            session_id=child_id,
+            parent_session_id=parent.session_id,
+            project_id=parent.project_id,
+            title=parent.title,
+            status="active",
+            created_at=now,
+            closed_at=None,
+            preferences_json=parent.preferences_json or {},
+            latest_state_json=parent.latest_state_json or {},
+        )
+    )
+    db.add(
+        models.LogEvent(
+            session_id=child_id,
+            type="session.forked",
+            payload_json={"parent_session_id": parent.session_id},
+        )
+    )
+    db.commit()
+    return db.query(models.DimSession).filter(models.DimSession.session_id == child_id).first()
+
+
 @router.post("/sessions/{session_id}/messages", status_code=202)
 async def send_message(session_id: str, payload: dict, db: Session = Depends(get_db)):
-    content = str(payload.get("prompt") or "")
+    session = _get_session_or_404(db, session_id)
+    if session.status != "active":
+        raise HTTPException(status_code=409, detail="session is not active")
+
+    # Backwards compatible: tests and older clients send {"content": "..."}.
+    raw = payload.get("prompt")
+    if raw is None:
+        raw = payload.get("content")
+    content = str(raw or "").strip()
     if not content:
-        raise HTTPException(status_code=422, detail="prompt is required")
+        raise HTTPException(status_code=422, detail="prompt/content is required")
 
     mode = str(payload.get("mode") or "design")
     export = payload.get("export") or {}
@@ -102,9 +151,6 @@ async def send_message(session_id: str, payload: dict, db: Session = Depends(get
     # Gate job enqueue on LLM readiness so clients fail fast instead of hanging.
     await ensure_llm_ready()
 
-    # Allow callers to override how long the job is allowed to run.
-    # We add a small buffer to the RQ job timeout so internal timeouts
-    # (LLM call / FreeCAD exec) can fail cleanly first.
     settings = Settings()
     timeout_seconds = int(payload.get("timeout_seconds") or settings.default_job_timeout_seconds)
     rq_timeout_seconds = timeout_seconds + settings.job_timeout_buffer_seconds
@@ -112,10 +158,6 @@ async def send_message(session_id: str, payload: dict, db: Session = Depends(get
     q = get_queue("freecad")
     job_id = str(uuid.uuid4())
 
-    # IMPORTANT: Use a string func reference instead of importing worker.jobs here.
-    # These API tests run the FastAPI app inside the pytest container, which does
-    # not include the worker package on sys.path. Importing worker.jobs would raise
-    # ModuleNotFoundError and fail test_session_flow before enqueueing the job.
     job = q.enqueue_call(
         func="worker.jobs.run_repair_loop_job",
         kwargs={
