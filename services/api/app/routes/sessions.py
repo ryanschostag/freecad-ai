@@ -106,6 +106,30 @@ def fork_session(session_id: str, db: Session = Depends(get_db)):
     return db.query(models.DimSession).filter(models.DimSession.session_id == child_id).first()
 
 
+
+
+@router.post("/sessions/{session_id}/end")
+def end_session(session_id: str, db: Session = Depends(get_db)):
+    session = _get_session_or_404(db, session_id)
+    if session.status == "closed":
+        return session
+
+    now = datetime.now(timezone.utc)
+    upsert_time(db, now)
+
+    session.status = "closed"
+    session.closed_at = now
+    db.add(
+        models.LogEvent(
+            session_id=session_id,
+            type="session.closed",
+            payload_json={"closed_at": now.isoformat()},
+        )
+    )
+    db.commit()
+    db.refresh(session)
+    return session
+
 @router.post("/sessions/{session_id}/messages", status_code=202)
 async def send_message(session_id: str, payload: dict, db: Session = Depends(get_db)):
     session = _get_session_or_404(db, session_id)
