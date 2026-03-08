@@ -1,12 +1,26 @@
 #!/bin/bash
+set -euo pipefail
+
+COMPOSE_FILES=(-f docker-compose.yml -f docker-compose.test-override.yml)
+PROFILE=(--profile test)
+
+down_file="down.log"
+build_file="build.log"
+up_file="up.log"
+run_file="run.log"
+
+rm -f $down_file
+rm -f $build_file
+rm -f $up_file
+rm -f $run_file
 
 
-docker compose --profile test down
+docker compose "${COMPOSE_FILES[@]}" "${PROFILE[@]}" down 2>&1 | tee $down_file
 sleep 1
-docker compose -f docker-compose.yml -f docker-compose.test-override.yml --profile test build --no-cache
+docker compose "${COMPOSE_FILES[@]}" "${PROFILE[@]}" build --no-cache 2>&1 | tee $build_file
 sleep 1
-docker cmopose --profile test up -d
+docker compose "${COMPOSE_FILES[@]}" "${PROFILE[@]}" up -d 2>&1 | tee $up_file
 sleep 1
-docker compose --profile test run --rm test-runner 
+docker compose "${COMPOSE_FILES[@]}" "${PROFILE[@]}" run --rm test-runner 2>&1 | tee $run_file
+
 echo Complete!
-

@@ -1,0 +1,15 @@
+There was an error running a command:
+
+<error> 
+
+- diagnose, explain and resolve
+- attached is the latest committed code (zip)
+- attached is the build log from build.sh (.log)
+- double-check any syntax and logic errors you created and fix those
+- provide new code in zip file download
+- provide clear instructions
+- cause no regressions
+- write a regression test to ensure this doesn't happen again
+- provide git commit message in plain text block
+
+thank you!
