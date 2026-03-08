@@ -9,11 +9,7 @@ build_file="build.log"
 up_file="up.log"
 run_file="run.log"
 
-rm -f $down_file
-rm -f $build_file
-rm -f $up_file
-rm -f $run_file
-
+rm -f *.log
 
 docker compose "${COMPOSE_FILES[@]}" "${PROFILE[@]}" down 2>&1 | tee $down_file
 sleep 1
