@@ -4,7 +4,7 @@ The build failed
 - attached is the latest committed code (freecadai-updates.zip)
 - attached is the build log (build-*.zip)
 - provide new code in zip file download
-- provide clear instructions
+- provide clear instructions: provide paths to the files that were updated and are new
 - cause no regressions: write a regression test to ensure against this occurring again
 - provide git commit message in plain text block
 
