@@ -1,8 +1,8 @@
 The tests failed. 
 
 - diagnose, explain and resolve
-- attached is the latest committed code (aws-ses-manager-dev.zip)
-- attached is the build log file (build.log)
+- attached is the latest committed code (freecad-ai-updates.zip) 
+- attached is the build log file (build.zip) 
 - double-check any syntax and logic errors you created and fix those before delivering code
 - provide new code in zip file download
 - provide clear instructions
