@@ -3,8 +3,8 @@ There was an error running a command:
 <error> 
 
 - diagnose, explain and resolve
-- attached is the latest committed code (zip)
-- attached is the build log from build.sh (.log)
+- attached is the latest committed code (freecad-ai-updates.zip)
+- attached is the build log from build-start-cpu-profile.sh (build.zip)
 - double-check any syntax and logic errors you created and fix those
 - provide new code in zip file download
 - provide clear instructions
