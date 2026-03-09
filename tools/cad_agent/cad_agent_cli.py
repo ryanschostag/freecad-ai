@@ -18,7 +18,7 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 import requests
 
@@ -108,6 +108,38 @@ class ApiClient:
                         f.write(chunk)
 
 
+def _candidate_download_urls(base_url: str, download_url: str) -> list[str]:
+    parsed = urlparse(download_url)
+    if not parsed.scheme or not parsed.netloc:
+        return [download_url]
+
+    candidates: list[str] = [download_url]
+    hostname = (parsed.hostname or "").lower()
+    known_internal = {"minio", "api", "db", "redis", "llm", "llm-fake", "freecad-worker", "api-test"}
+    if hostname not in known_internal:
+        return candidates
+
+    public_base = os.getenv("CAD_AGENT_ARTIFACT_BASE_URL") or os.getenv("MINIO_PUBLIC_BASE_URL")
+    if public_base:
+        pub = urlparse(public_base.rstrip("/"))
+        if pub.scheme and pub.netloc:
+            replacement = parsed._replace(scheme=pub.scheme, netloc=pub.netloc)
+            candidates.append(urlunparse(replacement))
+
+    api_host = (urlparse(base_url).hostname or "").lower()
+    for host in [api_host, "localhost", "127.0.0.1", "host.docker.internal"]:
+        if not host or host == hostname:
+            continue
+        if host in known_internal:
+            continue
+        netloc = f"{host}:{parsed.port}" if parsed.port else host
+        replacement = parsed._replace(netloc=netloc)
+        alt = urlunparse(replacement)
+        if alt not in candidates:
+            candidates.append(alt)
+    return candidates
+
+
 def _print(obj: Any) -> None:
     if isinstance(obj, (dict, list)):
         print(_json_dumps(obj))
@@ -179,13 +211,35 @@ def _download_session_artifacts(client: ApiClient, session_id: str, out_dir: Pat
         suffix = Path(parsed.path).suffix
         fname = f"{idx:03d}_{_safe_name(str(info.get('kind') or 'artifact'))}_{_safe_name(str(artifact_id))}{suffix}"
         dest = out_dir / fname
-        client.download_to(url, dest)
-        manifest["downloaded"].append({
-            "artifact_id": artifact_id,
-            "kind": info.get("kind"),
-            "object_key": info.get("object_key"),
-            "path": str(dest),
-        })
+
+        candidates = _candidate_download_urls(client.base_url, url)
+        last_error: str | None = None
+        for candidate in candidates:
+            try:
+                client.download_to(candidate, dest)
+                manifest["downloaded"].append({
+                    "artifact_id": artifact_id,
+                    "kind": info.get("kind"),
+                    "object_key": info.get("object_key"),
+                    "path": str(dest),
+                    "download_url": candidate,
+                    "source_download_url": url,
+                })
+                break
+            except requests.RequestException as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+                if dest.exists():
+                    dest.unlink()
+        else:
+            manifest["downloaded"].append({
+                "artifact_id": artifact_id,
+                "kind": info.get("kind"),
+                "object_key": info.get("object_key"),
+                "status": "download_failed",
+                "source_download_url": url,
+                "tried_urls": candidates,
+                "error": last_error,
+            })
 
     (out_dir / "manifest.json").write_text(_json_dumps(manifest) + "\n", encoding="utf-8")
     return manifest
@@ -356,16 +410,19 @@ def cmd_job_diagnose(client: ApiClient, args: argparse.Namespace) -> int:
         copied_cfgs = _copy_sanitized_configs(root)
         docker_services = _collect_docker_logs(root)
 
+        downloaded = arts_manifest.get("downloaded", [])
         summary = {
             "job_id": args.job_id,
             "session_id": session_id,
-            "artifact_count": len(arts_manifest.get("downloaded", [])),
+            "artifact_count": len(downloaded),
+            "artifact_download_failures": [item for item in downloaded if item.get("status") == "download_failed"],
             "config_files": copied_cfgs,
             "docker_services": docker_services,
             "notes": [
                 "Structured session log events come from /v1/sessions/{session_id}/logs.",
                 "Container stdout/stderr logs come from docker compose logs and are stored under docker_logs/.",
                 "Sensitive values from .env files are redacted in config/.",
+                "Artifact download URLs from internal Docker hostnames are rewritten to host-reachable URLs when needed.",
             ],
         }
         (root / "summary.json").write_text(_json_dumps(summary) + "\n", encoding="utf-8")

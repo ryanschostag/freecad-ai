@@ -18,5 +18,7 @@ sleep 1
 time docker compose "${COMPOSE_FILES[@]}" "${PROFILE[@]}" up -d 2>&1 | tee $up_file
 sleep 1
 time docker compose "${COMPOSE_FILES[@]}" "${PROFILE[@]}" run --rm test-runner 2>&1 | tee $run_file
+sleep 1
+time docker compose "${COMPOSE_FILES[@]}" "${PROFILE[@]}" down
 
 echo Complete!
