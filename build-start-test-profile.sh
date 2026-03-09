@@ -11,12 +11,12 @@ run_file="run.log"
 
 rm -f *.log
 
-docker compose "${COMPOSE_FILES[@]}" "${PROFILE[@]}" down 2>&1 | tee $down_file
+time docker compose "${COMPOSE_FILES[@]}" "${PROFILE[@]}" down 2>&1 | tee $down_file
 sleep 1
-docker compose "${COMPOSE_FILES[@]}" "${PROFILE[@]}" build --no-cache 2>&1 | tee $build_file
+time docker compose "${COMPOSE_FILES[@]}" "${PROFILE[@]}" build --no-cache 2>&1 | tee $build_file
 sleep 1
-docker compose "${COMPOSE_FILES[@]}" "${PROFILE[@]}" up -d 2>&1 | tee $up_file
+time docker compose "${COMPOSE_FILES[@]}" "${PROFILE[@]}" up -d 2>&1 | tee $up_file
 sleep 1
-docker compose "${COMPOSE_FILES[@]}" "${PROFILE[@]}" run --rm test-runner 2>&1 | tee $run_file
+time docker compose "${COMPOSE_FILES[@]}" "${PROFILE[@]}" run --rm test-runner 2>&1 | tee $run_file
 
 echo Complete!
