@@ -1,8 +1,8 @@
 import hashlib
+import json
 import os
 import subprocess
 import tempfile
-import traceback
 from pathlib import Path
 
 from worker.llm import chat
@@ -11,6 +11,16 @@ from worker.storage import put_object
 
 def _sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def _put_artifact(*, key: str, data: bytes, kind: str, content_type: str = "application/octet-stream") -> dict:
+    put_object(key, data, content_type=content_type)
+    return {
+        "kind": kind,
+        "object_key": key,
+        "bytes": len(data),
+        "sha256": _sha256_bytes(data),
+    }
 
 
 def run_repair_loop_job(
@@ -26,46 +36,45 @@ def run_repair_loop_job(
     max_repair_iterations: int = 3,
     timeout_seconds: int = 300,
 ):
-    """
-    RQ entrypoint executed by the freecad-worker container.
+    """RQ entrypoint executed by the freecad-worker container."""
 
-    Minimal behavior (sufficient for tests):
-      - Call LLM to generate macro code
-      - Store macro in MinIO
-      - Return schema that API persists/uses for metrics/artifacts
-
-    Notes:
-      - The API test asserts that at least one artifact exists and at least one is kind=freecad_macro_py.
-      - The API will record a "completion" based on artifact bytes when the job is "finished".
-    """
-
-    # Normalize export into a list of strings (best-effort; worker currently stores the macro regardless)
     export_list: list[str] = []
+    export_flags: dict[str, bool] = {"fcstd": True, "step": True, "stl": False}
     if isinstance(export, list):
         export_list = [str(x).strip().lower() for x in export if str(x).strip()]
+        export_flags = {"fcstd": "fcstd" in export_list, "step": "step" in export_list, "stl": "stl" in export_list}
     elif isinstance(export, str):
         export_list = [x.strip().lower() for x in export.split(",") if x.strip()]
+        export_flags = {"fcstd": "fcstd" in export_list, "step": "step" in export_list, "stl": "stl" in export_list}
     elif isinstance(export, dict):
-        # allow {"fcstd":true,"step":true} style
         export_list = [k.strip().lower() for k, v in export.items() if v]
-
-    # Build a simple, deterministic prompt for the local llm-fake / OpenAI-compatible endpoint.
-    # Keep it robust: even if the model returns junk, we still store what it returned.
-    sys_msg = (
-        "You are a CAD assistant. Output ONLY valid Python code for a FreeCAD macro. "
-        "Do not wrap in markdown fences. Do not include explanations."
-    )
-    user_msg = f"Prompt: {prompt}\nUnits: {units or 'mm'}\nTolerance(mm): {tolerance_mm or 0.1}\n"
+        export_flags = {
+            "fcstd": bool(export.get("fcstd", True)),
+            "step": bool(export.get("step", True)),
+            "stl": bool(export.get("stl", False)),
+        }
 
     messages = [
-        {"role": "system", "content": sys_msg},
-        {"role": "user", "content": user_msg},
+        {
+            "role": "system",
+            "content": "You are a CAD assistant. Output ONLY valid Python code for a FreeCAD macro. Do not wrap in markdown fences. Do not include explanations.",
+        },
+        {
+            "role": "user",
+            "content": f"Prompt: {prompt}\nUnits: {units or 'mm'}\nTolerance(mm): {tolerance_mm or 0.1}\n",
+        },
     ]
 
-    macro_code = chat(messages)
+    artifacts: list[dict] = []
+    issues: list[str] = []
+    placeholder_reason: str | None = None
 
-    # Always ensure we store something that is a python file; avoid empty macros.
-    if not macro_code or not macro_code.strip():
+    macro_code = chat(messages)
+    raw_macro_code = macro_code if isinstance(macro_code, str) else ""
+
+    if not raw_macro_code.strip():
+        placeholder_reason = "llm returned an empty response"
+        issues.append(placeholder_reason)
         macro_code = (
             "# Generated macro was empty; writing a safe placeholder.\n"
             "import FreeCAD as App\n"
@@ -74,30 +83,61 @@ def run_repair_loop_job(
 
     macro_bytes = macro_code.encode("utf-8")
     macro_key = f"sessions/{session_id}/macros/{user_message_id}.gen0.py"
+    artifacts.append(_put_artifact(key=macro_key, data=macro_bytes, kind="freecad_macro_py", content_type="text/x-python"))
 
-    put_object(macro_key, macro_bytes, content_type="text/x-python")
+    diag = {
+        "job_id": job_id,
+        "session_id": session_id,
+        "user_message_id": user_message_id,
+        "mode": mode,
+        "prompt": prompt,
+        "units": units or "mm",
+        "tolerance_mm": tolerance_mm if tolerance_mm is not None else 0.1,
+        "export": export_flags,
+        "export_list": export_list,
+        "max_repair_iterations": max_repair_iterations,
+        "timeout_seconds": timeout_seconds,
+        "placeholder_used": bool(placeholder_reason),
+        "placeholder_reason": placeholder_reason,
+        "raw_macro_chars": len(raw_macro_code),
+        "generated_macro_chars": len(macro_code),
+        "issues": issues,
+    }
+    diag_key = f"sessions/{session_id}/diagnostics/{user_message_id}.diagnostics.json"
+    artifacts.append(
+        _put_artifact(
+            key=diag_key,
+            data=(json.dumps(diag, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+            kind="job_diagnostics_json",
+            content_type="application/json",
+        )
+    )
+
+    if placeholder_reason:
+        reason_key = f"sessions/{session_id}/diagnostics/{user_message_id}.empty_macro_reason.txt"
+        artifacts.append(
+            _put_artifact(
+                key=reason_key,
+                data=(placeholder_reason + "\n").encode("utf-8"),
+                kind="job_reason_txt",
+                content_type="text/plain",
+            )
+        )
 
     return {
         "job_id": job_id,
         "session_id": session_id,
         "user_message_id": user_message_id,
-        "passed": True,
+        "passed": not bool(placeholder_reason),
         "iterations": 1,
-        "issues": [],
-        "artifacts": [
-            {
-                "kind": "freecad_macro_py",
-                "object_key": macro_key,
-                "bytes": len(macro_bytes),
-                "sha256": _sha256_bytes(macro_bytes),
-            }
-        ],
+        "issues": issues,
+        "artifacts": artifacts,
     }
 
 
 def _runner_script() -> str:
     return r"""
-import os, sys, traceback
+import os, traceback
 import FreeCAD as App
 
 def main():
@@ -156,13 +196,7 @@ if __name__ == "__main__":
 """
 
 
-def _run_freecad_headless(
-    freecadcmd: str,
-    macro_path: str,
-    outdir: str,
-    export: dict,
-    timeout_seconds: int,
-):
+def _run_freecad_headless(freecadcmd: str, macro_path: str, outdir: str, export: dict, timeout_seconds: int):
     runner_code = _runner_script()
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -170,33 +204,24 @@ def _run_freecad_headless(
         runner_path.write_text(runner_code, encoding="utf-8")
 
         env = os.environ.copy()
-        env.update({
-            "CAD_MACRO_PATH": macro_path,
-            "CAD_OUTDIR": outdir,
-            "CAD_EXPORT_FCSTD": "1" if export.get("fcstd", True) else "0",
-            "CAD_EXPORT_STEP": "1" if export.get("step", True) else "0",
-            "CAD_EXPORT_STL": "1" if export.get("stl", False) else "0",
-        })
+        env.update(
+            {
+                "CAD_MACRO_PATH": macro_path,
+                "CAD_OUTDIR": outdir,
+                "CAD_EXPORT_FCSTD": "1" if export.get("fcstd", True) else "0",
+                "CAD_EXPORT_STEP": "1" if export.get("step", True) else "0",
+                "CAD_EXPORT_STL": "1" if export.get("stl", False) else "0",
+            }
+        )
 
         cmd = [freecadcmd, "-c", str(runner_path)]
-
         try:
-            p = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout_seconds,
-                env=env,
-            )
-        except subprocess.TimeoutExpired:
-            raise RuntimeError("FreeCAD execution timed out")
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_seconds, env=env)
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("FreeCAD execution timed out") from exc
 
         return p.stdout, p.stderr, p.returncode
 
 
 def main():
-    """
-    Legacy/local entrypoint for running a macro via FreeCAD headless runner.
-    The RQ worker entrypoint used by the API is run_repair_loop_job().
-    """
     raise SystemExit("worker.jobs.main is not intended to be called directly")
