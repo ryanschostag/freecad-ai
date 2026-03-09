@@ -69,12 +69,19 @@ def run_repair_loop_job(
     issues: list[str] = []
     placeholder_reason: str | None = None
 
-    macro_code = chat(messages)
+    try:
+        macro_code = chat(messages)
+    except Exception as exc:
+        macro_code = ""
+        placeholder_reason = f"llm request failed: {type(exc).__name__}: {exc}"
+        issues.append(placeholder_reason)
     raw_macro_code = macro_code if isinstance(macro_code, str) else ""
 
-    if not raw_macro_code.strip():
+    if not raw_macro_code.strip() and not placeholder_reason:
         placeholder_reason = "llm returned an empty response"
         issues.append(placeholder_reason)
+
+    if placeholder_reason:
         macro_code = (
             "# Generated macro was empty; writing a safe placeholder.\n"
             "import FreeCAD as App\n"

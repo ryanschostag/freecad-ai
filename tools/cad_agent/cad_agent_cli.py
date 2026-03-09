@@ -203,16 +203,25 @@ def _download_session_artifacts(client: ApiClient, session_id: str, out_dir: Pat
             continue
 
         url = info.get("download_url")
-        if not url:
+        proxy_download_url = info.get("proxy_download_url")
+        if not url and not proxy_download_url:
             manifest["downloaded"].append({"artifact_id": artifact_id, "status": "missing_download_url"})
             continue
 
-        parsed = urlparse(url)
+        parsed = urlparse(url or proxy_download_url)
         suffix = Path(parsed.path).suffix
         fname = f"{idx:03d}_{_safe_name(str(info.get('kind') or 'artifact'))}_{_safe_name(str(artifact_id))}{suffix}"
         dest = out_dir / fname
 
-        candidates = _candidate_download_urls(client.base_url, url)
+        candidates = _candidate_download_urls(client.base_url, url) if url else []
+        if proxy_download_url:
+            if proxy_download_url.startswith("http://") or proxy_download_url.startswith("https://"):
+                proxy_candidate = proxy_download_url
+            else:
+                proxy_candidate = f"{client.base_url.rstrip('/')}/{proxy_download_url.lstrip('/')}"
+            if proxy_candidate not in candidates:
+                candidates.append(proxy_candidate)
+
         last_error: str | None = None
         for candidate in candidates:
             try:
@@ -224,6 +233,7 @@ def _download_session_artifacts(client: ApiClient, session_id: str, out_dir: Pat
                     "path": str(dest),
                     "download_url": candidate,
                     "source_download_url": url,
+                    "proxy_download_url": proxy_download_url,
                 })
                 break
             except requests.RequestException as exc:
@@ -237,6 +247,7 @@ def _download_session_artifacts(client: ApiClient, session_id: str, out_dir: Pat
                 "object_key": info.get("object_key"),
                 "status": "download_failed",
                 "source_download_url": url,
+                "proxy_download_url": proxy_download_url,
                 "tried_urls": candidates,
                 "error": last_error,
             })

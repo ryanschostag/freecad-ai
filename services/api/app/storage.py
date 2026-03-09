@@ -23,3 +23,8 @@ def presign_get(key: str, expires_seconds: int = 900):
         ExpiresIn=expires_seconds,
     )
     return url, datetime.now(timezone.utc) + timedelta(seconds=expires_seconds)
+
+
+def get_object_bytes(key: str) -> bytes:
+    obj = s3_client().get_object(Bucket=settings.s3_bucket, Key=key)
+    return obj["Body"].read()
