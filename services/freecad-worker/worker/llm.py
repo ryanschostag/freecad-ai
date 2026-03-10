@@ -122,6 +122,8 @@ def chat(
     max_tokens: int = 1200,
     *,
     timeout_s: float | None = None,
+    max_attempts: int | None = None,
+    stop: list[str] | None = None,
 ) -> str:
     """Uses an OpenAI-compatible chat endpoint.
 
@@ -145,6 +147,8 @@ def chat(
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
+    if stop:
+        payload["stop"] = stop
 
     req_timeout_default = float(settings.llm_request_timeout_seconds)
     connect_timeout_default = float(settings.llm_connect_timeout_seconds)
@@ -156,13 +160,13 @@ def chat(
     )
     connect_timeout = _env_float("LLM_HTTP_CONNECT_TIMEOUT_S", connect_timeout_default)
 
-    max_attempts = max(1, _env_int("LLM_HTTP_MAX_ATTEMPTS", 2))
+    attempts = max(1, int(max_attempts)) if max_attempts is not None else max(1, _env_int("LLM_HTTP_MAX_ATTEMPTS", 2))
     backoff_s = _env_float("LLM_HTTP_RETRY_BACKOFF_S", 1.0)
 
     client_timeout = httpx.Timeout(req_timeout, connect=connect_timeout)
 
     last_exc: Exception | None = None
-    for attempt in range(1, max_attempts + 1):
+    for attempt in range(1, attempts + 1):
         try:
             with httpx.Client(timeout=client_timeout) as client:
                 r = client.post(endpoint, json=payload)
@@ -179,7 +183,7 @@ def chat(
                     "prompt": _messages_to_prompt(messages),
                     "n_predict": max_tokens,
                     "temperature": temperature,
-                    "stop": ["<|im_end|>", "</s>", "```"],
+                    "stop": stop or ["<|im_end|>", "</s>", "```"],
                 }
                 r2 = client.post(url + "/completion", json=completion_payload)
                 r2.raise_for_status()
@@ -194,12 +198,12 @@ def chat(
                 )
         except (httpx.ReadTimeout, httpx.ConnectTimeout) as e:
             last_exc = e
-            if attempt >= max_attempts:
+            if attempt >= attempts:
                 raise
             time.sleep(backoff_s * attempt)
         except Exception as e:
             last_exc = e
-            if attempt >= max_attempts:
+            if attempt >= attempts:
                 raise
             time.sleep(backoff_s * attempt)
 

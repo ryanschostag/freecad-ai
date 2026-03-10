@@ -23,6 +23,25 @@ def _put_artifact(*, key: str, data: bytes, kind: str, content_type: str = "appl
     }
 
 
+
+
+def _llm_generation_budget(timeout_seconds: int) -> dict[str, int | float]:
+    """Keep the LLM call inside the enclosing RQ job timeout.
+
+    The queue timeout is enforced outside Python by RQ's work-horse process.
+    If we allow multiple long HTTP attempts, the work horse can be killed before
+    chat() returns or raises, leaving no diagnostics or artifacts. Reserve a
+    small slice for uploads/cleanup and use a single bounded attempt.
+    """
+    total = max(60, int(timeout_seconds or 300))
+    reserved_for_cleanup = min(120, max(30, total // 8))
+    request_timeout = max(30, total - reserved_for_cleanup)
+    return {
+        "timeout_s": float(request_timeout),
+        "max_attempts": 1,
+        "max_tokens": 400,
+    }
+
 def run_repair_loop_job(
     *,
     job_id: str,
@@ -69,8 +88,16 @@ def run_repair_loop_job(
     issues: list[str] = []
     placeholder_reason: str | None = None
 
+    llm_budget = _llm_generation_budget(timeout_seconds)
+
     try:
-        macro_code = chat(messages)
+        macro_code = chat(
+            messages,
+            timeout_s=float(llm_budget["timeout_s"]),
+            max_attempts=int(llm_budget["max_attempts"]),
+            max_tokens=int(llm_budget["max_tokens"]),
+            stop=["<|im_end|>", "</s>", "```"],
+        )
     except Exception as exc:
         macro_code = ""
         placeholder_reason = f"llm request failed: {type(exc).__name__}: {exc}"
@@ -104,6 +131,7 @@ def run_repair_loop_job(
         "export_list": export_list,
         "max_repair_iterations": max_repair_iterations,
         "timeout_seconds": timeout_seconds,
+        "llm_budget": llm_budget,
         "placeholder_used": bool(placeholder_reason),
         "placeholder_reason": placeholder_reason,
         "raw_macro_chars": len(raw_macro_code),
