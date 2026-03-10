@@ -139,7 +139,7 @@ async function sendPrompt() {
     export: exportObj,
     units: $("units").value,
     tolerance_mm: parseFloat($("tolerance").value || "0.1"),
-    timeout_seconds: parseInt($("timeoutSeconds").value || "300", 10),
+    timeout_seconds: parseInt($("timeoutSeconds").value || "900", 10),
   };
 
   const data = await apiFetch(`v1/sessions/${sid}/messages`, {
@@ -165,9 +165,12 @@ async function trackJob(auto = false) {
 
   if (pollTimer) clearInterval(pollTimer);
 
+  let consecutiveFailures = 0;
+
   const poll = async () => {
     try {
       const data = await getJob(jobId);
+      consecutiveFailures = 0;
       setJobOutput(data);
 
       // if finished/failed, stop
@@ -176,9 +179,12 @@ async function trackJob(auto = false) {
         pollTimer = null;
       }
     } catch (e) {
-      setJobOutput(e.message);
-      clearInterval(pollTimer);
-      pollTimer = null;
+      consecutiveFailures += 1;
+      setJobOutput({ error: e.message, consecutive_poll_failures: consecutiveFailures });
+      if (consecutiveFailures >= 5) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
     }
   };
 

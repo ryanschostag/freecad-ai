@@ -61,16 +61,14 @@ def get_job(job_id: str, db: Session = Depends(get_db)):
     }
 
     now = datetime.now(timezone.utc)
-    time_id = upsert_time(db, now)
 
     # Update persisted record from live job info (idempotent)
-    if rec:
-        if status != rec.status:
-            rec.status = status
-            if status == "started" and rec.started_at is None:
-                rec.started_at = now
-            if status in {"finished","failed"} and rec.finished_at is None:
-                rec.finished_at = now
+    if rec and status != rec.status:
+        rec.status = status
+        if status == "started" and rec.started_at is None:
+            rec.started_at = now
+        if status in {"finished", "failed"} and rec.finished_at is None:
+            rec.finished_at = now
 
     if j and status == "finished":
         result = j.result or {}
@@ -83,6 +81,8 @@ def get_job(job_id: str, db: Session = Depends(get_db)):
         # The worker returns artifacts (including generated macro code) but does not
         # write directly to the API database. Persisting this here ensures metrics
         # reflect both prompts and completions for end-to-end tests.
+        time_id = upsert_time(db, now)
+
         if session_id and user_message_id:
             existing_completion = (
                 db.query(models.FactCompletion)
