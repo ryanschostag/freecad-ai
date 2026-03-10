@@ -13,9 +13,37 @@ from app.queue import get_queue
 from app.schemas import CreateSessionRequest
 from app.settings import Settings
 from app.utils import upsert_time
-from worker.jobs import run_repair_loop_job
 
 router = APIRouter()
+
+
+def _load_run_repair_loop_job():
+    """Import the worker job entrypoint for inline test execution.
+
+    In the test-runner container pytest imports the API package directly from
+    /repo/services/api, which does not automatically put
+    /repo/services/freecad-worker on sys.path. Defer the import and add the
+    worker package root when needed so API tests can import app.main without the
+    dedicated worker image layout.
+    """
+    try:
+        from worker.jobs import run_repair_loop_job
+        return run_repair_loop_job
+    except ModuleNotFoundError as exc:
+        if exc.name != "worker":
+            raise
+
+        import sys
+        from pathlib import Path
+
+        worker_root = Path(__file__).resolve().parents[3] / "freecad-worker"
+        worker_root_str = str(worker_root)
+        if worker_root_str not in sys.path:
+            sys.path.insert(0, worker_root_str)
+
+        from worker.jobs import run_repair_loop_job
+        return run_repair_loop_job
+
 
 
 async def ensure_llm_ready() -> None:
@@ -205,6 +233,7 @@ async def send_message(session_id: str, payload: dict, db: Session = Depends(get
         job_run.started_at = started_at
         db.commit()
         try:
+            run_repair_loop_job = _load_run_repair_loop_job()
             result = run_repair_loop_job(
                 job_id=job_id,
                 session_id=session_id,
