@@ -90,3 +90,29 @@ def test_chat_falls_back_to_completion_when_chat_payload_has_no_extractable_text
 
     assert "App.newDocument('Model')" in out
     assert fake.calls[1][0].endswith("/completion")
+
+
+def test_chat_sanitizes_markdown_fence_stop_sequence(monkeypatch):
+    llm = _load_llm_module()
+
+    fake = _FakeClient([
+        _FakeResponse({
+            "choices": [
+                {
+                    "message": {
+                        "content": "```python\nimport FreeCAD as App\nApp.newDocument('Model')\n```"
+                    }
+                }
+            ]
+        })
+    ])
+    monkeypatch.setattr(llm.httpx, "Client", lambda timeout=None: fake)
+
+    out = llm.chat(
+        [{"role": "user", "content": "make a box"}],
+        stop=["<|im_end|>", "</s>", "```"],
+    )
+
+    payload = fake.calls[0][1]
+    assert payload["stop"] == ["<|im_end|>", "</s>"]
+    assert out == "import FreeCAD as App\nApp.newDocument('Model')"

@@ -58,5 +58,5 @@ def test_run_repair_loop_job_uses_bounded_llm_budget(monkeypatch):
     assert seen["max_attempts"] == 1
     assert seen["max_tokens"] == 400
     assert seen["timeout_s"] < 900
-    assert seen["stop"] == ["<|im_end|>", "</s>", "```"]
+    assert seen["stop"] == ["<|im_end|>", "</s>", "<|endoftext|>"]
     assert uploads

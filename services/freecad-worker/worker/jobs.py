@@ -96,7 +96,7 @@ def run_repair_loop_job(
             timeout_s=float(llm_budget["timeout_s"]),
             max_attempts=int(llm_budget["max_attempts"]),
             max_tokens=int(llm_budget["max_tokens"]),
-            stop=["<|im_end|>", "</s>", "```"],
+            stop=["<|im_end|>", "</s>", "<|endoftext|>"],
         )
     except Exception as exc:
         macro_code = ""

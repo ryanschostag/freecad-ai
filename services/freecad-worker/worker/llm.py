@@ -107,13 +107,29 @@ def _extract_chat_text(data: dict[str, Any]) -> str:
 
 
 def _messages_to_prompt(messages: list[dict[str, str]]) -> str:
+    """Render messages as ChatML for Qwen/llama.cpp native /completion calls."""
     blocks: list[str] = []
     for message in messages:
-        role = str(message.get("role", "user")).upper()
+        role = str(message.get("role", "user")).strip().lower() or "user"
         content = str(message.get("content", ""))
-        blocks.append(f"{role}:\n{content}")
-    blocks.append("ASSISTANT:\n")
-    return "\n\n".join(blocks)
+        blocks.append(f"<|im_start|>{role}\n{content}\n<|im_end|>")
+    blocks.append("<|im_start|>assistant\n")
+    return "\n".join(blocks)
+
+
+def _sanitize_stop_sequences(stop: list[str] | None) -> list[str] | None:
+    if not stop:
+        return stop
+    sanitized: list[str] = []
+    seen: set[str] = set()
+    for item in stop:
+        s = str(item)
+        if not s or s == "```":
+            continue
+        if s not in seen:
+            seen.add(s)
+            sanitized.append(s)
+    return sanitized or None
 
 
 def chat(
@@ -147,8 +163,9 @@ def chat(
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
-    if stop:
-        payload["stop"] = stop
+    sanitized_stop = _sanitize_stop_sequences(stop)
+    if sanitized_stop:
+        payload["stop"] = sanitized_stop
 
     req_timeout_default = float(settings.llm_request_timeout_seconds)
     connect_timeout_default = float(settings.llm_connect_timeout_seconds)
@@ -183,7 +200,7 @@ def chat(
                     "prompt": _messages_to_prompt(messages),
                     "n_predict": max_tokens,
                     "temperature": temperature,
-                    "stop": stop or ["<|im_end|>", "</s>", "```"],
+                    "stop": sanitized_stop or ["<|im_end|>", "</s>", "<|endoftext|>"],
                 }
                 r2 = client.post(url + "/completion", json=completion_payload)
                 r2.raise_for_status()
