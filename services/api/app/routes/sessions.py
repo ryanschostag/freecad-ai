@@ -13,6 +13,7 @@ from app.queue import get_queue
 from app.schemas import CreateSessionRequest
 from app.settings import Settings
 from app.utils import upsert_time
+from worker.jobs import run_repair_loop_job
 
 router = APIRouter()
 
@@ -179,53 +180,89 @@ async def send_message(session_id: str, payload: dict, db: Session = Depends(get
     timeout_seconds = int(payload.get("timeout_seconds") or settings.default_job_timeout_seconds)
     rq_timeout_seconds = timeout_seconds + settings.job_timeout_buffer_seconds
 
-    q = get_queue("freecad")
     job_id = str(uuid.uuid4())
 
-    # IMPORTANT:
-    # Do NOT enqueue a callable here. In our current container mix, rq serializes the
-    # callable into a colon-form reference (e.g. "worker:jobs.run_repair_loop_job"),
-    # and the worker's rq import resolver (import_attribute) cannot resolve that form.
-    # Enqueue a dotted string path instead, which the worker can import consistently.
-    job = q.enqueue_call(
-        func="worker.jobs.run_repair_loop_job",
-        kwargs={
-            "job_id": job_id,
-            "session_id": session_id,
-            "user_message_id": user_message_id,
-            "prompt": content,
-            "mode": mode,
-            "export": export,
-            "units": units,
-            "tolerance_mm": tolerance_mm,
-            "max_repair_iterations": 3,
-            "timeout_seconds": timeout_seconds,
-        },
-        job_id=job_id,
-        timeout=rq_timeout_seconds,
-        result_ttl=3600,
-        failure_ttl=3600,
-    )
-    job.meta["session_id"] = session_id
-    job.meta["user_message_id"] = user_message_id
-    job.save_meta()
-
     # NOTE: The repo model is JobRun (job_runs), not FactJob.
-    db.add(
-        models.JobRun(
-            job_id=job_id,
-            session_id=session_id,
-            user_message_id=user_message_id,
-            status="queued",
-            enqueued_at=now,
-            started_at=None,
-            finished_at=None,
-            error_json={},
-            result_json={},
-        )
+    job_run = models.JobRun(
+        job_id=job_id,
+        session_id=session_id,
+        user_message_id=user_message_id,
+        status="queued",
+        enqueued_at=now,
+        started_at=None,
+        finished_at=None,
+        error_json={},
+        result_json={},
     )
+    db.add(job_run)
     db.add(models.LogEvent(session_id=session_id, type="job.queued", payload_json={"job_id": job_id}))
     db.commit()
+
+    if settings.inline_jobs:
+        started_at = datetime.now(timezone.utc)
+        job_run = db.query(models.JobRun).filter(models.JobRun.job_id == job_id).one()
+        job_run.status = "started"
+        job_run.started_at = started_at
+        db.commit()
+        try:
+            result = run_repair_loop_job(
+                job_id=job_id,
+                session_id=session_id,
+                user_message_id=user_message_id,
+                prompt=content,
+                mode=mode,
+                export=export,
+                units=units,
+                tolerance_mm=tolerance_mm,
+                max_repair_iterations=3,
+                timeout_seconds=timeout_seconds,
+            )
+            finished_at = datetime.now(timezone.utc)
+            job_run = db.query(models.JobRun).filter(models.JobRun.job_id == job_id).one()
+            job_run.status = "finished"
+            job_run.finished_at = finished_at
+            job_run.result_json = result
+            job_run.error_json = {}
+            db.commit()
+        except Exception as exc:
+            finished_at = datetime.now(timezone.utc)
+            job_run = db.query(models.JobRun).filter(models.JobRun.job_id == job_id).one()
+            job_run.status = "failed"
+            job_run.finished_at = finished_at
+            job_run.result_json = {}
+            job_run.error_json = {"exc_info": f"{type(exc).__name__}: {exc}"}
+            db.add(models.LogEvent(session_id=session_id, type="job.failed", payload_json={"job_id": job_id, "error": job_run.error_json}))
+            db.commit()
+    else:
+        q = get_queue("freecad")
+
+        # IMPORTANT:
+        # Do NOT enqueue a callable here. In our current container mix, rq serializes the
+        # callable into a colon-form reference (e.g. "worker:jobs.run_repair_loop_job"),
+        # and the worker's rq import resolver (import_attribute) cannot resolve that form.
+        # Enqueue a dotted string path instead, which the worker can import consistently.
+        job = q.enqueue_call(
+            func="worker.jobs.run_repair_loop_job",
+            kwargs={
+                "job_id": job_id,
+                "session_id": session_id,
+                "user_message_id": user_message_id,
+                "prompt": content,
+                "mode": mode,
+                "export": export,
+                "units": units,
+                "tolerance_mm": tolerance_mm,
+                "max_repair_iterations": 3,
+                "timeout_seconds": timeout_seconds,
+            },
+            job_id=job_id,
+            timeout=rq_timeout_seconds,
+            result_ttl=3600,
+            failure_ttl=3600,
+        )
+        job.meta["session_id"] = session_id
+        job.meta["user_message_id"] = user_message_id
+        job.save_meta()
 
     return {
         "job_id": job_id,

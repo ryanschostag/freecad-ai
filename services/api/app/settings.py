@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -34,6 +35,11 @@ class Settings(BaseSettings):
     model_id: str = "cpu-default"
     model_backend: str = "llama.cpp"
     model_device: str = "cpu"
+
+    # Test/dev option: run jobs synchronously in-process instead of relying on
+    # an external RQ worker. Disabled by default; enabled in the docker-compose
+    # test profile to keep API TestClient runs deterministic.
+    inline_jobs: bool = Field(default=False, validation_alias="CAD_AGENT_INLINE_JOBS")
 
 
 settings = Settings()

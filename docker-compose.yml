@@ -61,6 +61,7 @@ services:
       - MODEL_ID=test-default
       - MODEL_BACKEND=fake-llm
       - MODEL_DEVICE=cpu
+      - CAD_AGENT_INLINE_JOBS=1
     volumes:
       - artifacts_staging:/artifacts_staging
       - ragconfig:/config
@@ -93,6 +94,7 @@ services:
       - MODEL_ID=test-default
       - MODEL_BACKEND=fake-llm
       - MODEL_DEVICE=cpu
+      - CAD_AGENT_INLINE_JOBS=1
     volumes:
       - ./:/repo
     depends_on:
