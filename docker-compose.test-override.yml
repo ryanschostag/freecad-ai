@@ -1,0 +1,44 @@
+# Overrides for the `test` profile to ensure the MinIO credentials used by
+# API + worker + test-runner always match the MinIO server credentials.
+#
+# This prevents failures when the host environment has AWS_* or S3_* variables set
+# and avoids nested ${...${...}} substitutions which are not reliably supported by Compose.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.test-override.yml --profile test up -d --build
+#   docker compose -f docker-compose.yml -f docker-compose.test-override.yml --profile test run --rm test-runner
+#
+services:
+  # Force MinIO to use stable test credentials regardless of .env contents.
+  minio:
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+
+  # Force all clients to use the same credentials (do NOT reference S3_ACCESS_KEY first).
+  api-test:
+    environment:
+      - LLM_HTTP_TIMEOUT_S=300
+      - LLM_HTTP_CONNECT_TIMEOUT_S=10
+      - LLM_HTTP_MAX_ATTEMPTS=2
+      - LLM_HTTP_RETRY_BACKOFF_S=1.0
+      - S3_ACCESS_KEY=minioadmin
+      - S3_SECRET_KEY=minioadmin
+
+  freecad-worker-test:
+    environment:
+      - LLM_HTTP_TIMEOUT_S=300
+      - LLM_HTTP_CONNECT_TIMEOUT_S=10
+      - LLM_HTTP_MAX_ATTEMPTS=2
+      - LLM_HTTP_RETRY_BACKOFF_S=1.0
+      - S3_ACCESS_KEY=minioadmin
+      - S3_SECRET_KEY=minioadmin
+
+  test-runner:
+    environment:
+      - LLM_HTTP_TIMEOUT_S=300
+      - LLM_HTTP_CONNECT_TIMEOUT_S=10
+      - LLM_HTTP_MAX_ATTEMPTS=2
+      - LLM_HTTP_RETRY_BACKOFF_S=1.0
+      - S3_ACCESS_KEY=minioadmin
+      - S3_SECRET_KEY=minioadmin

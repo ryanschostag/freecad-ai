@@ -1,0 +1,14 @@
+The tests failed. 
+
+- diagnose, explain and resolve
+- attached is the latest committed code (freecad-ai-updates.zip) 
+- attached is the build log file (build.zip) (from build-test.sh)
+- double-check any syntax and logic errors you created and fix those before delivering code
+- provide new code in zip file download
+- provide clear instructions
+- cause no regressions: write regression test(s) that ensure this failure doesn't happen again.
+- do not change any tests to make the code pass the tests as per Test Driven Development
+- do not add any folders or files that are ignored by .gitignore
+- provide git commit message in plain text block
+
+thank you!

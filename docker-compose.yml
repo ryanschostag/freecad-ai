@@ -1,7 +1,9 @@
 services:
   api:
     profiles: ["cpu", "gpu"]
-    build: ./services/api
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
     ports:
       - "8080:8080"
     environment:
@@ -12,11 +14,16 @@ services:
       - API_BASE_URL=http://api:8080
       - REDIS_URL=redis://redis:6379/0
 
+      # Model execution metadata (persisted into dim_model for metrics)
+      - MODEL_ID=cpu-default
+      - MODEL_BACKEND=llama.cpp
+      - MODEL_DEVICE=cpu
+
       # MinIO (S3-compatible)
       - STORAGE_MODE=minio
       - S3_ENDPOINT=http://minio:9000
-      - S3_ACCESS_KEY=minioadmin
-      - S3_SECRET_KEY=minioadmin
+      - S3_ACCESS_KEY=${S3_ACCESS_KEY:-${MINIO_ROOT_USER:-minioadmin}}
+      - S3_SECRET_KEY=${S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD:-minioadmin}}
       - S3_BUCKET=cad-artifacts
       - S3_REGION=us-east-1
     volumes:
@@ -31,7 +38,9 @@ services:
 
   api-test:
     profiles: ["test"]
-    build: ./services/api
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
     ports:
       - "8081:8080"
     environment:
@@ -43,10 +52,16 @@ services:
       - API_BASE_URL=http://api-test:8080
       - REDIS_URL=redis://redis:6379/0
       - S3_ENDPOINT=http://minio:9000
-      - S3_ACCESS_KEY=minioadmin
-      - S3_SECRET_KEY=minioadmin
+      - S3_ACCESS_KEY=${S3_ACCESS_KEY:-${MINIO_ROOT_USER:-minioadmin}}
+      - S3_SECRET_KEY=${S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD:-minioadmin}}
       - S3_BUCKET=cad-artifacts
       - S3_REGION=us-east-1
+
+      # Model execution metadata for the test profile
+      - MODEL_ID=test-default
+      - MODEL_BACKEND=fake-llm
+      - MODEL_DEVICE=cpu
+      - CAD_AGENT_INLINE_JOBS=1
     volumes:
       - artifacts_staging:/artifacts_staging
       - ragconfig:/config
@@ -56,6 +71,66 @@ services:
       - minio
       - minio-init
       - freecad-worker-test
+
+  # Run pytest inside Docker with all required services available.
+  # Intended for CI/CD and local deterministic runs.
+  test-runner:
+    profiles: ["test"]
+    image: python:3.12-slim
+    working_dir: /repo
+    environment:
+      - CAD_AGENT_BASE_URL=http://api-test:8080
+      - API_BASE_URL=http://api-test:8080
+      - LLM_BASE_URL=http://llm-fake:8000
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql+psycopg://cad:cad@db:5432/cad
+      - S3_ENDPOINT=http://minio:9000
+      - S3_ACCESS_KEY=${S3_ACCESS_KEY:-${MINIO_ROOT_USER:-minioadmin}}
+      - S3_SECRET_KEY=${S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD:-minioadmin}}
+      - S3_BUCKET=cad-artifacts
+      - S3_REGION=us-east-1
+
+      # Keep model metadata consistent with api-test
+      - MODEL_ID=test-default
+      - MODEL_BACKEND=fake-llm
+      - MODEL_DEVICE=cpu
+      - CAD_AGENT_INLINE_JOBS=1
+    volumes:
+      - ./:/repo
+    depends_on:
+      - api-test
+      - freecad-worker-test
+      - db
+      - redis
+      - minio
+      - minio-init
+      - llm-fake
+    command: >
+      sh -c "
+      pip install --no-cache-dir -r tests/requirements.txt &&
+      pytest -vv --full-trace
+      "
+  web-ui:
+    profiles: ["cpu", "gpu"]
+    build: ./services/web-ui
+    ports:
+      - "3000:3000"
+    environment:
+      - API_BASE_URL=http://api:8080
+      - WEBUI_API_TIMEOUT_S=60
+    depends_on:
+      - api
+
+  web-ui-test:
+    profiles: ["test"]
+    build: ./services/web-ui
+    ports:
+      - "3001:3000"
+    environment:
+      - API_BASE_URL=http://api-test:8080
+      - WEBUI_API_TIMEOUT_S=60
+    depends_on:
+      - api-test
 
   db:
     image: pgvector/pgvector:pg16
@@ -77,8 +152,8 @@ services:
     image: minio/minio:RELEASE.2024-12-18T13-15-44Z
     command: server /data --console-address ":9001"
     environment:
-      - MINIO_ROOT_USER=minioadmin
-      - MINIO_ROOT_PASSWORD=minioadmin
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minioadmin}
     ports:
       - "9000:9000"
       - "9001:9001"
@@ -91,7 +166,7 @@ services:
       - minio
     entrypoint: >
       /bin/sh -c "
-      until (/usr/bin/mc alias set local http://minio:9000 minioadmin minioadmin) do echo '...waiting for minio' && sleep 1; done;
+      until (/usr/bin/mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:-minioadmin}) do echo '...waiting for minio' && sleep 1; done;
       /usr/bin/mc mb --ignore-existing local/cad-artifacts;
       exit 0;
       "
@@ -146,21 +221,33 @@ services:
       - "8001:8000"
     volumes:
       - ./tools:/app:ro
-    # No network aliases; test services use LLM_BASE_URL=http://llm-fake:8000
 
   freecad-worker:
     profiles: ["cpu", "gpu"]
     build: ./services/freecad-worker
     environment:
+      - LLM_HTTP_TIMEOUT_S=900
+      - LLM_HTTP_CONNECT_TIMEOUT_S=30
+      - LLM_HTTP_MAX_ATTEMPTS=5
+      - LLM_HTTP_RETRY_BACKOFF_S=1.0
       - DATABASE_URL=postgresql+psycopg://cad:cad@db:5432/cad
       - REDIS_URL=redis://redis:6379/0
       - LLM_BASE_URL=http://llm:8000
       - API_BASE_URL=http://api:8080
+      # Model execution metadata (persisted into dim_model for metrics)
+      - MODEL_ID=cpu-default
+      - MODEL_BACKEND=llama.cpp
+      - MODEL_DEVICE=cpu
       - S3_ENDPOINT=http://minio:9000
-      - S3_ACCESS_KEY=minioadmin
-      - S3_SECRET_KEY=minioadmin
+      - S3_ACCESS_KEY=${S3_ACCESS_KEY:-${MINIO_ROOT_USER:-minioadmin}}
+      - S3_SECRET_KEY=${S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD:-minioadmin}}
       - S3_BUCKET=cad-artifacts
       - S3_REGION=us-east-1
+      - LLM_REQUEST_TIMEOUT_SECONDS=${LLM_REQUEST_TIMEOUT_SECONDS:-600}
+      - LLM_CONNECT_TIMEOUT_SECONDS=${LLM_CONNECT_TIMEOUT_SECONDS:-30}
+      - LLM_HTTP_MAX_ATTEMPTS=${LLM_HTTP_MAX_ATTEMPTS:-2}
+      - LLM_HTTP_RETRY_BACKOFF_S=${LLM_HTTP_RETRY_BACKOFF_S:-1.0}
+
     volumes:
       - artifacts_staging:/artifacts_staging
     depends_on:
@@ -177,9 +264,13 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - LLM_BASE_URL=http://llm-fake:8000
       - API_BASE_URL=http://api-test:8080
+      # Model execution metadata for the test profile
+      - MODEL_ID=test-default
+      - MODEL_BACKEND=fake-llm
+      - MODEL_DEVICE=cpu
       - S3_ENDPOINT=http://minio:9000
-      - S3_ACCESS_KEY=minioadmin
-      - S3_SECRET_KEY=minioadmin
+      - S3_ACCESS_KEY=${S3_ACCESS_KEY:-${MINIO_ROOT_USER:-minioadmin}}
+      - S3_SECRET_KEY=${S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD:-minioadmin}}
       - S3_BUCKET=cad-artifacts
       - S3_REGION=us-east-1
     volumes:
@@ -190,10 +281,6 @@ services:
       - minio
       - minio-init
       - llm-fake
-
-    # NOTE: Do not depend_on api-test here.
-    # api-test already depends_on freecad-worker-test (so `--profile test up` starts both).
-    # Having both depend on each other creates a Compose dependency cycle.
 
 volumes:
   pgdata: {}

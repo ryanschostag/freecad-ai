@@ -1,23 +1,175 @@
 version: 1
+
 policy:
-  default_trust_tier: 2
+  default_trust_tier: community
   require_https: true
+
   allow_domains:
-    - freecad.org
     - wiki.freecad.org
-    - docs.freecad.org
+    - freecad.github.io
+    - openscad.org
+    - en.wikibooks.org
+    - mcmaster.com
+    - us.misumi-ec.com
+    - digikey.com
+    - keystoneelectronics.com
+
   deny_domains:
-    - medium.com
+    - youtube.com
+    - facebook.com
+    - twitter.com
     - reddit.com
+    - pinterest.com
+
+
 sources:
+
+  # ---------------------------------------------------------------------------
+  # EXISTING SOURCE (unchanged)
+  # ---------------------------------------------------------------------------
   - source_id: freecad-wiki
     enabled: true
-    trust_tier: 1
-    kind: crawl
+    trust_tier: official
+    kind: web
+
     entrypoints:
-      - "https://wiki.freecad.org/Main_Page"
+      - https://wiki.freecad.org/
+
     include_patterns:
       - "^https://wiki.freecad.org/.*"
+
     exclude_patterns:
-      - "^https://wiki.freecad.org/.*\?action=edit"
-    license_note: "Verify license before reuse."
+      - ".*Special:.*"
+      - ".*oldid=.*"
+
+    license_note: "FreeCAD wiki documentation"
+
+
+  # ---------------------------------------------------------------------------
+  # FreeCAD API + scripting documentation
+  # ---------------------------------------------------------------------------
+  - source_id: freecad-api-docs
+    enabled: true
+    trust_tier: official
+    kind: web
+
+    entrypoints:
+      - https://freecad.github.io/API/
+
+    include_patterns:
+      - "^https://freecad.github.io/API/.*"
+
+    exclude_patterns:
+      - ".*\\.pdf$"
+
+    license_note: "FreeCAD API documentation"
+
+
+  # ---------------------------------------------------------------------------
+  # OpenSCAD modeling documentation
+  # ---------------------------------------------------------------------------
+  - source_id: openscad-docs
+    enabled: true
+    trust_tier: official
+    kind: web
+
+    entrypoints:
+      - https://openscad.org/documentation.html
+      - https://openscad.org/cheatsheet/
+      - https://en.wikibooks.org/wiki/OpenSCAD_User_Manual
+
+    include_patterns:
+      - "^https://openscad.org/.*"
+      - "^https://en.wikibooks.org/wiki/OpenSCAD_User_Manual.*"
+
+    exclude_patterns:
+      - ".*\\.pdf$"
+
+    license_note: "OpenSCAD documentation"
+
+
+  # ---------------------------------------------------------------------------
+  # McMaster mechanical reference
+  # ---------------------------------------------------------------------------
+  - source_id: mcmaster-mechanical-components
+    enabled: true
+    trust_tier: vendor_reference
+    kind: web
+
+    entrypoints:
+      - https://www.mcmaster.com/bearings/
+      - https://www.mcmaster.com/gears/
+      - https://www.mcmaster.com/fans/
+      - https://www.mcmaster.com/batteries/
+      - https://www.mcmaster.com/enclosures/
+
+    include_patterns:
+      - "^https://www\\.mcmaster\\.com/.*"
+
+    exclude_patterns:
+      - ".*\\.pdf$"
+
+    license_note: "Mechanical part reference"
+
+
+  # ---------------------------------------------------------------------------
+  # MISUMI configurable mechanical components
+  # ---------------------------------------------------------------------------
+  - source_id: misumi-configurable-components
+    enabled: true
+    trust_tier: vendor_reference
+    kind: web
+
+    entrypoints:
+      - https://us.misumi-ec.com/vona2/mech/
+
+    include_patterns:
+      - "^https://us\\.misumi-ec\\.com/.*"
+
+    exclude_patterns:
+      - ".*\\.pdf$"
+
+    license_note: "Mechanical CAD reference"
+
+
+  # ---------------------------------------------------------------------------
+  # DigiKey electronic components
+  # ---------------------------------------------------------------------------
+  - source_id: digikey-electromechanical-components
+    enabled: true
+    trust_tier: vendor_reference
+    kind: web
+
+    entrypoints:
+      - https://www.digikey.com/en/products/category/battery-products/86
+      - https://www.digikey.com/en/products/category/enclosures-boxes-cases/594
+      - https://www.digikey.com/en/products/category/fans-thermal-management/217
+
+    include_patterns:
+      - "^https://www\\.digikey\\.com/.*"
+
+    exclude_patterns:
+      - ".*\\.pdf$"
+
+    license_note: "Electromechanical part references"
+
+
+  # ---------------------------------------------------------------------------
+  # Keystone battery holders
+  # ---------------------------------------------------------------------------
+  - source_id: keystone-battery-holders
+    enabled: true
+    trust_tier: vendor_reference
+    kind: web
+
+    entrypoints:
+      - https://www.keyelco.com/category.cfm/Battery-Holders
+
+    include_patterns:
+      - "^https://www\\.keyelco\\.com/.*"
+
+    exclude_patterns:
+      - ".*\\.pdf$"
+
+    license_note: "Battery holder mechanical references"
+
