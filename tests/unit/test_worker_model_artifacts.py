@@ -66,6 +66,45 @@ def test_run_repair_loop_job_uploads_rendered_models(monkeypatch):
     assert b'"freecad_model_step"' in uploads[3]["data"]
 
 
+def test_run_repair_loop_job_collects_nondefault_model_filenames(monkeypatch):
+    jobs = _load_jobs_module()
+
+    uploads = []
+
+    monkeypatch.setattr(jobs, "chat", lambda *_args, **_kwargs: "import FreeCAD as App\nApp.newDocument('Model')\n")
+    monkeypatch.setattr(jobs, "_detect_freecadcmd", lambda: "/usr/bin/freecadcmd")
+
+    def fake_run_freecad_headless(_freecadcmd, _macro_path, outdir, export, _timeout_seconds):
+        outdir_path = Path(outdir)
+        (outdir_path / "RazorBladeHousing.FCStd").write_bytes(b"fcstd-custom-name")
+        (outdir_path / "RazorBladeHousing.step").write_bytes(b"step-custom-name")
+        return "ok", "", 0
+
+    monkeypatch.setattr(jobs, "_run_freecad_headless", fake_run_freecad_headless)
+    monkeypatch.setattr(
+        jobs,
+        "put_object",
+        lambda key, data, content_type="application/octet-stream": uploads.append(
+            {"key": key, "data": data, "content_type": content_type}
+        ),
+    )
+
+    result = jobs.run_repair_loop_job(
+        job_id="job-custom",
+        session_id="session-custom",
+        user_message_id="message-custom",
+        prompt="create a custom named part",
+        export={"fcstd": True, "step": True, "stl": False},
+    )
+
+    assert result["passed"] is True
+    assert result["issues"] == []
+    assert uploads[1]["key"] == "sessions/session-custom/models/message-custom.FCStd"
+    assert uploads[1]["data"] == b"fcstd-custom-name"
+    assert uploads[2]["key"] == "sessions/session-custom/models/message-custom.step"
+    assert uploads[2]["data"] == b"step-custom-name"
+
+
 def test_run_repair_loop_job_records_missing_freecad_binary(monkeypatch):
     jobs = _load_jobs_module()
 
@@ -96,4 +135,46 @@ def test_run_repair_loop_job_records_missing_freecad_binary(monkeypatch):
     ]
     assert b'"freecadcmd": null' in uploads[1]["data"]
     assert b'"executed": false' in uploads[1]["data"]
+
+
+def test_run_freecad_headless_executes_runner_script_without_console_flag(monkeypatch):
+    jobs = _load_jobs_module()
+
+    called = {}
+
+    class CompletedProcess:
+        stdout = "ok"
+        stderr = ""
+        returncode = 0
+
+    def fake_run(cmd, capture_output, text, timeout, env):
+        called["cmd"] = cmd
+        called["capture_output"] = capture_output
+        called["text"] = text
+        called["timeout"] = timeout
+        called["env"] = env
+        return CompletedProcess()
+
+    monkeypatch.setattr(jobs.subprocess, "run", fake_run)
+
+    stdout, stderr, returncode = jobs._run_freecad_headless(
+        "/usr/bin/freecadcmd",
+        "/tmp/macro.py",
+        "/tmp/outdir",
+        {"fcstd": True, "step": True, "stl": False},
+        123,
+    )
+
+    assert called["cmd"][0] == "/usr/bin/freecadcmd"
+    assert called["cmd"][1].endswith("runner.py")
+    assert called["cmd"] == [called["cmd"][0], called["cmd"][1]]
+    assert called["capture_output"] is True
+    assert called["text"] is True
+    assert called["timeout"] == 123
+    assert called["env"]["CAD_MACRO_PATH"] == "/tmp/macro.py"
+    assert called["env"]["CAD_OUTDIR"] == "/tmp/outdir"
+    assert called["env"]["CAD_EXPORT_FCSTD"] == "1"
+    assert called["env"]["CAD_EXPORT_STEP"] == "1"
+    assert called["env"]["CAD_EXPORT_STL"] == "0"
+    assert (stdout, stderr, returncode) == ("ok", "", 0)
 

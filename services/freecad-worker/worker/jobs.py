@@ -52,14 +52,39 @@ def _detect_freecadcmd() -> str | None:
     return None
 
 
-def _collect_model_artifacts(*, session_id: str, user_message_id: str, outdir: str) -> list[dict]:
+def _collect_model_artifacts(*, session_id: str, user_message_id: str, outdir: str, export: dict[str, bool] | None = None) -> list[dict]:
     artifacts: list[dict] = []
-    for name in ("model.FCStd", "model.step", "model.stl"):
-        path = Path(outdir) / name
-        if not path.exists() or not path.is_file():
+    outdir_path = Path(outdir)
+    if not outdir_path.exists():
+        return artifacts
+
+    requested_suffixes = []
+    export_flags = export or {"fcstd": True, "step": True, "stl": False}
+    if export_flags.get("fcstd", True):
+        requested_suffixes.append(".fcstd")
+    if export_flags.get("step", True):
+        requested_suffixes.extend([".step", ".stp"])
+    if export_flags.get("stl", False):
+        requested_suffixes.append(".stl")
+
+    candidates: dict[str, Path] = {}
+    for path in sorted(outdir_path.iterdir()):
+        if not path.is_file():
             continue
-        ext = path.suffix
-        key = f"sessions/{session_id}/models/{user_message_id}{ext}"
+        suffix = path.suffix.lower()
+        if suffix not in {".fcstd", ".step", ".stp", ".stl"}:
+            continue
+        if requested_suffixes and suffix not in requested_suffixes:
+            continue
+        candidates.setdefault(suffix, path)
+
+    preferred_order = [".fcstd", ".step", ".stp", ".stl"]
+    for suffix in preferred_order:
+        path = candidates.get(suffix)
+        if not path:
+            continue
+        normalized_ext = ".step" if suffix == ".stp" else path.suffix
+        key = f"sessions/{session_id}/models/{user_message_id}{normalized_ext}"
         artifacts.append(
             _put_artifact(
                 key=key,
@@ -203,6 +228,7 @@ def run_repair_loop_job(
                         session_id=session_id,
                         user_message_id=user_message_id,
                         outdir=str(model_outdir),
+                        export=export_flags,
                     )
                     artifacts.extend(model_artifacts)
                     render_result["uploaded_model_kinds"] = [artifact["kind"] for artifact in model_artifacts]
@@ -347,7 +373,7 @@ def _run_freecad_headless(freecadcmd: str, macro_path: str, outdir: str, export:
             }
         )
 
-        cmd = [freecadcmd, "-c", str(runner_path)]
+        cmd = [freecadcmd, str(runner_path)]
         try:
             p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_seconds, env=env)
         except subprocess.TimeoutExpired as exc:
