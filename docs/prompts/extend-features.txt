@@ -4,6 +4,7 @@ I would like you to expand the following features:
 
 - attached is the latest committed code (zip)
 - provide new code in zip file download
+- provide new code in plain text blocks for copy and paste
 - provide clear instructions
 - cause no regressions
 - add regression tests for the new features
