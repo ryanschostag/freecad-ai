@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -23,6 +24,51 @@ def _put_artifact(*, key: str, data: bytes, kind: str, content_type: str = "appl
     }
 
 
+def _artifact_content_type(path: Path) -> str:
+    suffix = path.suffix.lower()
+    return {
+        ".fcstd": "application/octet-stream",
+        ".step": "model/step",
+        ".stp": "model/step",
+        ".stl": "model/stl",
+    }.get(suffix, "application/octet-stream")
+
+
+def _artifact_kind_for_model(path: Path) -> str:
+    suffix = path.suffix.lower()
+    return {
+        ".fcstd": "freecad_model_fcstd",
+        ".step": "freecad_model_step",
+        ".stp": "freecad_model_step",
+        ".stl": "freecad_model_stl",
+    }.get(suffix, "freecad_model_file")
+
+
+def _detect_freecadcmd() -> str | None:
+    for candidate in ("freecadcmd", "FreeCADCmd", "/usr/bin/freecadcmd", "/usr/bin/FreeCADCmd"):
+        resolved = shutil.which(candidate) if "/" not in candidate else candidate
+        if resolved and os.path.exists(resolved):
+            return resolved
+    return None
+
+
+def _collect_model_artifacts(*, session_id: str, user_message_id: str, outdir: str) -> list[dict]:
+    artifacts: list[dict] = []
+    for name in ("model.FCStd", "model.step", "model.stl"):
+        path = Path(outdir) / name
+        if not path.exists() or not path.is_file():
+            continue
+        ext = path.suffix
+        key = f"sessions/{session_id}/models/{user_message_id}{ext}"
+        artifacts.append(
+            _put_artifact(
+                key=key,
+                data=path.read_bytes(),
+                kind=_artifact_kind_for_model(path),
+                content_type=_artifact_content_type(path),
+            )
+        )
+    return artifacts
 
 
 def _llm_generation_budget(timeout_seconds: int) -> dict[str, int | float]:
@@ -41,6 +87,7 @@ def _llm_generation_budget(timeout_seconds: int) -> dict[str, int | float]:
         "max_attempts": 1,
         "max_tokens": 400,
     }
+
 
 def run_repair_loop_job(
     *,
@@ -87,6 +134,15 @@ def run_repair_loop_job(
     artifacts: list[dict] = []
     issues: list[str] = []
     placeholder_reason: str | None = None
+    render_result: dict[str, object] = {
+        "attempted": False,
+        "executed": False,
+        "returncode": None,
+        "stdout": "",
+        "stderr": "",
+        "freecadcmd": None,
+        "uploaded_model_kinds": [],
+    }
 
     llm_budget = _llm_generation_budget(timeout_seconds)
 
@@ -119,6 +175,47 @@ def run_repair_loop_job(
     macro_key = f"sessions/{session_id}/macros/{user_message_id}.gen0.py"
     artifacts.append(_put_artifact(key=macro_key, data=macro_bytes, kind="freecad_macro_py", content_type="text/x-python"))
 
+    if not placeholder_reason:
+        render_result["attempted"] = True
+        freecadcmd = _detect_freecadcmd()
+        render_result["freecadcmd"] = freecadcmd
+        if freecadcmd:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                macro_path = Path(tmpdir) / f"{user_message_id}.py"
+                macro_path.write_text(macro_code, encoding="utf-8")
+                model_outdir = Path(tmpdir) / "models"
+                model_outdir.mkdir(parents=True, exist_ok=True)
+                try:
+                    stdout, stderr, returncode = _run_freecad_headless(
+                        freecadcmd,
+                        str(macro_path),
+                        str(model_outdir),
+                        export_flags,
+                        timeout_seconds,
+                    )
+                    render_result.update({
+                        "executed": True,
+                        "stdout": stdout,
+                        "stderr": stderr,
+                        "returncode": returncode,
+                    })
+                    model_artifacts = _collect_model_artifacts(
+                        session_id=session_id,
+                        user_message_id=user_message_id,
+                        outdir=str(model_outdir),
+                    )
+                    artifacts.extend(model_artifacts)
+                    render_result["uploaded_model_kinds"] = [artifact["kind"] for artifact in model_artifacts]
+                    if returncode != 0:
+                        issues.append(f"freecad execution failed with return code {returncode}")
+                    if not model_artifacts:
+                        issues.append("freecad execution completed but did not produce any model artifacts")
+                except Exception as exc:
+                    render_result["stderr"] = f"{type(exc).__name__}: {exc}"
+                    issues.append(f"freecad execution failed: {type(exc).__name__}: {exc}")
+        else:
+            issues.append("freecadcmd not found; skipping model export")
+
     diag = {
         "job_id": job_id,
         "session_id": session_id,
@@ -136,6 +233,7 @@ def run_repair_loop_job(
         "placeholder_reason": placeholder_reason,
         "raw_macro_chars": len(raw_macro_code),
         "generated_macro_chars": len(macro_code),
+        "render": render_result,
         "issues": issues,
     }
     diag_key = f"sessions/{session_id}/diagnostics/{user_message_id}.diagnostics.json"
@@ -260,3 +358,4 @@ def _run_freecad_headless(freecadcmd: str, macro_path: str, outdir: str, export:
 
 def main():
     raise SystemExit("worker.jobs.main is not intended to be called directly")
+
