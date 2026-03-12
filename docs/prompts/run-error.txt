@@ -4,7 +4,7 @@ There was an error running a command:
 
 - diagnose, explain and resolve
 - attached is the latest committed code (freecad-ai-updates.zip)
-- attached is the build log from build-start-cpu-profile.sh (build.zip)
+- attached is the build log from build-cpu.sh (build.zip)
 - double-check any syntax and logic errors you created and fix those
 - provide new code in zip file download
 - provide complete code for all files that were changed or newly added in plain text blocks for copy and paste as a backup in ase the
