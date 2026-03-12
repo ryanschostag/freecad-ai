@@ -143,11 +143,11 @@ def test_run_freecad_headless_executes_runner_script_without_console_flag(monkey
     called = {}
 
     class CompletedProcess:
-        stdout = "ok"
+        stdout = "RUNNER:START\nRUNNER:DONE\n"
         stderr = ""
         returncode = 0
 
-    def fake_run(cmd, capture_output, text, timeout, env):
+    def fake_run(cmd, capture_output, text, timeout, env, input=None):
         called["cmd"] = cmd
         called["capture_output"] = capture_output
         called["text"] = text
@@ -176,5 +176,84 @@ def test_run_freecad_headless_executes_runner_script_without_console_flag(monkey
     assert called["env"]["CAD_EXPORT_FCSTD"] == "1"
     assert called["env"]["CAD_EXPORT_STEP"] == "1"
     assert called["env"]["CAD_EXPORT_STL"] == "0"
-    assert (stdout, stderr, returncode) == ("ok", "", 0)
+    assert (stdout, stderr, returncode) == ("RUNNER:START\nRUNNER:DONE\n", "", 0)
 
+
+
+def test_run_repair_loop_job_rejects_syntax_invalid_macro(monkeypatch):
+    jobs = _load_jobs_module()
+
+    uploads = []
+
+    monkeypatch.setattr(jobs, "chat", lambda *_args, **_kwargs: "import FreeCAD\nfoo = (")
+    monkeypatch.setattr(jobs, "_detect_freecadcmd", lambda: "/usr/bin/freecadcmd")
+    monkeypatch.setattr(
+        jobs,
+        "put_object",
+        lambda key, data, content_type="application/octet-stream": uploads.append(
+            {"key": key, "data": data, "content_type": content_type}
+        ),
+    )
+
+    result = jobs.run_repair_loop_job(
+        job_id="job-syntax",
+        session_id="session-syntax",
+        user_message_id="message-syntax",
+        prompt="broken macro",
+    )
+
+    assert result["passed"] is False
+    assert result["issues"] == [
+        "generated macro failed syntax check: SyntaxError: '(' was never closed (line 2)"
+    ]
+    assert [a["kind"] for a in result["artifacts"]] == [
+        "freecad_macro_py",
+        "job_diagnostics_json",
+        "job_reason_txt",
+    ]
+    assert b'Generated macro was empty; writing a safe placeholder.' in uploads[0]["data"]
+    assert b'generated macro failed syntax check' in uploads[1]["data"]
+    assert b"runner_markers_seen" in uploads[1]["data"]
+
+
+def test_run_freecad_headless_falls_back_to_console_stdin_when_script_argument_is_ignored(monkeypatch):
+    jobs = _load_jobs_module()
+
+    calls = []
+
+    class CompletedProcess:
+        def __init__(self, stdout, stderr, returncode):
+            self.stdout = stdout
+            self.stderr = stderr
+            self.returncode = returncode
+
+    def fake_run(cmd, capture_output, text, timeout, env, input=None):
+        calls.append({
+            "cmd": cmd,
+            "capture_output": capture_output,
+            "text": text,
+            "timeout": timeout,
+            "env": env,
+            "input": input,
+        })
+        if len(calls) == 1:
+            return CompletedProcess("FreeCAD banner", "", 0)
+        return CompletedProcess("RUNNER:START\nRUNNER:DONE\n", "", 0)
+
+    monkeypatch.setattr(jobs.subprocess, "run", fake_run)
+
+    stdout, stderr, returncode = jobs._run_freecad_headless(
+        "/usr/bin/freecadcmd",
+        "/tmp/macro.py",
+        "/tmp/outdir",
+        {"fcstd": True, "step": True, "stl": False},
+        123,
+    )
+
+    assert calls[0]["cmd"][0] == "/usr/bin/freecadcmd"
+    assert calls[0]["cmd"][1].endswith("runner.py")
+    assert calls[0]["input"] is None
+    assert calls[1]["cmd"] == ["/usr/bin/freecadcmd", "-c"]
+    assert "RUNNER:START" in calls[1]["input"]
+    assert calls[1]["env"]["CAD_MACRO_PATH"] == "/tmp/macro.py"
+    assert (stdout, stderr, returncode) == ("RUNNER:START\nRUNNER:DONE\n", "", 0)

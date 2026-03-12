@@ -96,6 +96,11 @@ def _collect_model_artifacts(*, session_id: str, user_message_id: str, outdir: s
     return artifacts
 
 
+def _runner_markers_seen(stdout: str, stderr: str) -> bool:
+    combined = f"{stdout}\n{stderr}"
+    return "RUNNER:START" in combined and "RUNNER:DONE" in combined
+
+
 def _llm_generation_budget(timeout_seconds: int) -> dict[str, int | float]:
     """Keep the LLM call inside the enclosing RQ job timeout.
 
@@ -167,6 +172,7 @@ def run_repair_loop_job(
         "stderr": "",
         "freecadcmd": None,
         "uploaded_model_kinds": [],
+        "runner_markers_seen": False,
     }
 
     llm_budget = _llm_generation_budget(timeout_seconds)
@@ -188,6 +194,16 @@ def run_repair_loop_job(
     if not raw_macro_code.strip() and not placeholder_reason:
         placeholder_reason = "llm returned an empty response"
         issues.append(placeholder_reason)
+
+    if raw_macro_code.strip() and not placeholder_reason:
+        try:
+            compile(raw_macro_code, f"{user_message_id}.py", "exec")
+        except SyntaxError as exc:
+            placeholder_reason = (
+                f"generated macro failed syntax check: SyntaxError: {exc.msg}"
+                f" (line {exc.lineno})"
+            )
+            issues.append(placeholder_reason)
 
     if placeholder_reason:
         macro_code = (
@@ -223,6 +239,7 @@ def run_repair_loop_job(
                         "stdout": stdout,
                         "stderr": stderr,
                         "returncode": returncode,
+                        "runner_markers_seen": _runner_markers_seen(stdout, stderr),
                     })
                     model_artifacts = _collect_model_artifacts(
                         session_id=session_id,
@@ -232,8 +249,11 @@ def run_repair_loop_job(
                     )
                     artifacts.extend(model_artifacts)
                     render_result["uploaded_model_kinds"] = [artifact["kind"] for artifact in model_artifacts]
+                    runner_markers_seen = _runner_markers_seen(stdout, stderr)
                     if returncode != 0:
                         issues.append(f"freecad execution failed with return code {returncode}")
+                    elif not runner_markers_seen and not model_artifacts:
+                        issues.append("freecad process returned success but runner script did not execute")
                     if not model_artifacts:
                         issues.append("freecad execution completed but did not produce any model artifacts")
                 except Exception as exc:
@@ -300,6 +320,7 @@ import os, traceback
 import FreeCAD as App
 
 def main():
+    print("RUNNER:START")
     macro_path = os.environ.get("CAD_MACRO_PATH")
     outdir = os.environ.get("CAD_OUTDIR") or os.getcwd()
     export_fcstd = os.environ.get("CAD_EXPORT_FCSTD", "1")
@@ -346,6 +367,8 @@ def main():
         except Exception as e:
             print("VALIDATION:EXPORT_FAILED:STL:" + str(e))
 
+    print("RUNNER:DONE")
+
 if __name__ == "__main__":
     try:
         main()
@@ -373,13 +396,29 @@ def _run_freecad_headless(freecadcmd: str, macro_path: str, outdir: str, export:
             }
         )
 
-        cmd = [freecadcmd, str(runner_path)]
-        try:
-            p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_seconds, env=env)
-        except subprocess.TimeoutExpired as exc:
-            raise RuntimeError("FreeCAD execution timed out") from exc
+        attempts = [
+            {"cmd": [freecadcmd, str(runner_path)], "input": None},
+            {"cmd": [freecadcmd, "-c"], "input": runner_code},
+        ]
+        last = None
+        for attempt in attempts:
+            try:
+                p = subprocess.run(
+                    attempt["cmd"],
+                    input=attempt["input"],
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_seconds,
+                    env=env,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise RuntimeError("FreeCAD execution timed out") from exc
+            last = p
+            if p.returncode != 0 or _runner_markers_seen(p.stdout, p.stderr):
+                return p.stdout, p.stderr, p.returncode
 
-        return p.stdout, p.stderr, p.returncode
+        assert last is not None
+        return last.stdout, last.stderr, last.returncode
 
 
 def main():
