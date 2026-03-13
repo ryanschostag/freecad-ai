@@ -10,6 +10,10 @@ from worker.llm import chat
 from worker.storage import put_object
 
 
+RUNNER_START_MARKER = "RUNNER:START"
+RUNNER_DONE_MARKER = "RUNNER:DONE"
+
+
 def _sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -52,7 +56,13 @@ def _detect_freecadcmd() -> str | None:
     return None
 
 
-def _collect_model_artifacts(*, session_id: str, user_message_id: str, outdir: str, export: dict[str, bool] | None = None) -> list[dict]:
+def _collect_model_artifacts(
+    *,
+    session_id: str,
+    user_message_id: str,
+    outdir: str,
+    export: dict[str, bool] | None = None,
+) -> list[dict]:
     artifacts: list[dict] = []
     outdir_path = Path(outdir)
     if not outdir_path.exists():
@@ -96,9 +106,21 @@ def _collect_model_artifacts(*, session_id: str, user_message_id: str, outdir: s
     return artifacts
 
 
+def _runner_markers(stdout: str, stderr: str) -> tuple[bool, bool]:
+    start_seen = False
+    done_seen = False
+    for line in f"{stdout}\n{stderr}".splitlines():
+        stripped = line.strip()
+        if stripped == RUNNER_START_MARKER:
+            start_seen = True
+        elif stripped == RUNNER_DONE_MARKER:
+            done_seen = True
+    return start_seen, done_seen
+
+
 def _runner_markers_seen(stdout: str, stderr: str) -> bool:
-    combined = f"{stdout}\n{stderr}"
-    return "RUNNER:START" in combined and "RUNNER:DONE" in combined
+    start_seen, done_seen = _runner_markers(stdout, stderr)
+    return start_seen and done_seen
 
 
 def _llm_generation_budget(timeout_seconds: int) -> dict[str, int | float]:
@@ -171,8 +193,10 @@ def run_repair_loop_job(
         "stdout": "",
         "stderr": "",
         "freecadcmd": None,
-        "uploaded_model_kinds": [],
+        "runner_start_seen": False,
+        "runner_done_seen": False,
         "runner_markers_seen": False,
+        "uploaded_model_kinds": [],
     }
 
     llm_budget = _llm_generation_budget(timeout_seconds)
@@ -234,12 +258,15 @@ def run_repair_loop_job(
                         export_flags,
                         timeout_seconds,
                     )
+                    runner_start_seen, runner_done_seen = _runner_markers(stdout, stderr)
                     render_result.update({
                         "executed": True,
                         "stdout": stdout,
                         "stderr": stderr,
                         "returncode": returncode,
-                        "runner_markers_seen": _runner_markers_seen(stdout, stderr),
+                        "runner_start_seen": runner_start_seen,
+                        "runner_done_seen": runner_done_seen,
+                        "runner_markers_seen": runner_start_seen and runner_done_seen,
                     })
                     model_artifacts = _collect_model_artifacts(
                         session_id=session_id,
@@ -249,10 +276,11 @@ def run_repair_loop_job(
                     )
                     artifacts.extend(model_artifacts)
                     render_result["uploaded_model_kinds"] = [artifact["kind"] for artifact in model_artifacts]
-                    runner_markers_seen = _runner_markers_seen(stdout, stderr)
                     if returncode != 0:
                         issues.append(f"freecad execution failed with return code {returncode}")
-                    elif not runner_markers_seen and not model_artifacts:
+                    elif runner_start_seen and not runner_done_seen and not model_artifacts:
+                        issues.append("freecad runner started but did not complete")
+                    elif not runner_start_seen and not runner_done_seen and not model_artifacts:
                         issues.append("freecad process returned success but runner script did not execute")
                     if not model_artifacts:
                         issues.append("freecad execution completed but did not produce any model artifacts")
@@ -315,9 +343,11 @@ def run_repair_loop_job(
 
 
 def _runner_script() -> str:
-    return r"""
-import os, traceback
+    return r'''
+import os
+import traceback
 import FreeCAD as App
+
 
 def main():
     print("RUNNER:START")
@@ -369,13 +399,22 @@ def main():
 
     print("RUNNER:DONE")
 
+
 if __name__ == "__main__":
     try:
         main()
     except Exception:
         traceback.print_exc()
         raise
-"""
+'''
+
+
+def _build_console_exec_input(runner_path: str) -> str:
+    return (
+        "exec(compile(open(" + repr(runner_path) + ", 'r', encoding='utf-8').read(), "
+        + repr(runner_path)
+        + ", 'exec'))\n"
+    )
 
 
 def _run_freecad_headless(freecadcmd: str, macro_path: str, outdir: str, export: dict, timeout_seconds: int):
@@ -398,7 +437,7 @@ def _run_freecad_headless(freecadcmd: str, macro_path: str, outdir: str, export:
 
         attempts = [
             {"cmd": [freecadcmd, str(runner_path)], "input": None},
-            {"cmd": [freecadcmd, "-c"], "input": runner_code},
+            {"cmd": [freecadcmd, "-c"], "input": _build_console_exec_input(str(runner_path))},
         ]
         last = None
         for attempt in attempts:
@@ -423,4 +462,3 @@ def _run_freecad_headless(freecadcmd: str, macro_path: str, outdir: str, export:
 
 def main():
     raise SystemExit("worker.jobs.main is not intended to be called directly")
-

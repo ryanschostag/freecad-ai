@@ -30,7 +30,7 @@ def test_run_repair_loop_job_uploads_rendered_models(monkeypatch):
         outdir_path = Path(outdir)
         (outdir_path / "model.FCStd").write_bytes(b"fcstd-bytes")
         (outdir_path / "model.step").write_bytes(b"step-bytes")
-        return "ok", "", 0
+        return "ok\nRUNNER:START\nRUNNER:DONE\n", "", 0
 
     monkeypatch.setattr(jobs, "_run_freecad_headless", fake_run_freecad_headless)
     monkeypatch.setattr(
@@ -78,7 +78,7 @@ def test_run_repair_loop_job_collects_nondefault_model_filenames(monkeypatch):
         outdir_path = Path(outdir)
         (outdir_path / "RazorBladeHousing.FCStd").write_bytes(b"fcstd-custom-name")
         (outdir_path / "RazorBladeHousing.step").write_bytes(b"step-custom-name")
-        return "ok", "", 0
+        return "RUNNER:START\nRUNNER:DONE\n", "", 0
 
     monkeypatch.setattr(jobs, "_run_freecad_headless", fake_run_freecad_headless)
     monkeypatch.setattr(
@@ -137,6 +137,18 @@ def test_run_repair_loop_job_records_missing_freecad_binary(monkeypatch):
     assert b'"executed": false' in uploads[1]["data"]
 
 
+def test_runner_markers_seen_requires_exact_marker_lines():
+    jobs = _load_jobs_module()
+
+    stdout = "[FreeCAD Console mode]\nRUNNER:START\n"
+    stderr = '>>> print("RUNNER:DONE")\nIndentationError: unexpected indent\n'
+
+    assert jobs._runner_markers_seen(stdout, stderr) is False
+    start_seen, done_seen = jobs._runner_markers(stdout, stderr)
+    assert start_seen is True
+    assert done_seen is False
+
+
 def test_run_freecad_headless_executes_runner_script_without_console_flag(monkeypatch):
     jobs = _load_jobs_module()
 
@@ -147,8 +159,9 @@ def test_run_freecad_headless_executes_runner_script_without_console_flag(monkey
         stderr = ""
         returncode = 0
 
-    def fake_run(cmd, capture_output, text, timeout, env, input=None):
+    def fake_run(cmd, input=None, capture_output=None, text=None, timeout=None, env=None):
         called["cmd"] = cmd
+        called["input"] = input
         called["capture_output"] = capture_output
         called["text"] = text
         called["timeout"] = timeout
@@ -168,6 +181,7 @@ def test_run_freecad_headless_executes_runner_script_without_console_flag(monkey
     assert called["cmd"][0] == "/usr/bin/freecadcmd"
     assert called["cmd"][1].endswith("runner.py")
     assert called["cmd"] == [called["cmd"][0], called["cmd"][1]]
+    assert called["input"] is None
     assert called["capture_output"] is True
     assert called["text"] is True
     assert called["timeout"] == 123
@@ -177,7 +191,6 @@ def test_run_freecad_headless_executes_runner_script_without_console_flag(monkey
     assert called["env"]["CAD_EXPORT_STEP"] == "1"
     assert called["env"]["CAD_EXPORT_STL"] == "0"
     assert (stdout, stderr, returncode) == ("RUNNER:START\nRUNNER:DONE\n", "", 0)
-
 
 
 def test_run_repair_loop_job_rejects_syntax_invalid_macro(monkeypatch):
@@ -213,10 +226,10 @@ def test_run_repair_loop_job_rejects_syntax_invalid_macro(monkeypatch):
     ]
     assert b'Generated macro was empty; writing a safe placeholder.' in uploads[0]["data"]
     assert b'generated macro failed syntax check' in uploads[1]["data"]
-    assert b"runner_markers_seen" in uploads[1]["data"]
+    assert b'"runner_markers_seen"' in uploads[1]["data"]
 
 
-def test_run_freecad_headless_falls_back_to_console_stdin_when_script_argument_is_ignored(monkeypatch):
+def test_run_freecad_headless_falls_back_to_console_exec_when_script_argument_is_ignored(monkeypatch):
     jobs = _load_jobs_module()
 
     calls = []
@@ -227,7 +240,7 @@ def test_run_freecad_headless_falls_back_to_console_stdin_when_script_argument_i
             self.stderr = stderr
             self.returncode = returncode
 
-    def fake_run(cmd, capture_output, text, timeout, env, input=None):
+    def fake_run(cmd, input=None, capture_output=None, text=None, timeout=None, env=None):
         calls.append({
             "cmd": cmd,
             "capture_output": capture_output,
@@ -237,7 +250,7 @@ def test_run_freecad_headless_falls_back_to_console_stdin_when_script_argument_i
             "input": input,
         })
         if len(calls) == 1:
-            return CompletedProcess("FreeCAD banner", "", 0)
+            return CompletedProcess("FreeCAD banner\nRUNNER:START\n", '>>> print("RUNNER:DONE")\n', 0)
         return CompletedProcess("RUNNER:START\nRUNNER:DONE\n", "", 0)
 
     monkeypatch.setattr(jobs.subprocess, "run", fake_run)
@@ -254,6 +267,40 @@ def test_run_freecad_headless_falls_back_to_console_stdin_when_script_argument_i
     assert calls[0]["cmd"][1].endswith("runner.py")
     assert calls[0]["input"] is None
     assert calls[1]["cmd"] == ["/usr/bin/freecadcmd", "-c"]
-    assert "RUNNER:START" in calls[1]["input"]
+    assert "exec(compile(open(" in calls[1]["input"]
+    assert "runner.py" in calls[1]["input"]
     assert calls[1]["env"]["CAD_MACRO_PATH"] == "/tmp/macro.py"
     assert (stdout, stderr, returncode) == ("RUNNER:START\nRUNNER:DONE\n", "", 0)
+
+
+def test_run_repair_loop_job_reports_runner_started_but_not_completed(monkeypatch):
+    jobs = _load_jobs_module()
+
+    uploads = []
+
+    monkeypatch.setattr(jobs, "chat", lambda *_args, **_kwargs: "import FreeCAD as App\nApp.newDocument('Model')\n")
+    monkeypatch.setattr(jobs, "_detect_freecadcmd", lambda: "/usr/bin/freecadcmd")
+    monkeypatch.setattr(jobs, "_run_freecad_headless", lambda *_args, **_kwargs: ("RUNNER:START\n", "", 0))
+    monkeypatch.setattr(
+        jobs,
+        "put_object",
+        lambda key, data, content_type="application/octet-stream": uploads.append(
+            {"key": key, "data": data, "content_type": content_type}
+        ),
+    )
+
+    result = jobs.run_repair_loop_job(
+        job_id="job-runner",
+        session_id="session-runner",
+        user_message_id="message-runner",
+        prompt="create a simple box",
+        export={"fcstd": True, "step": True, "stl": False},
+    )
+
+    assert result["passed"] is True
+    assert result["issues"] == [
+        "freecad runner started but did not complete",
+        "freecad execution completed but did not produce any model artifacts",
+    ]
+    assert b'"runner_start_seen": true' in uploads[1]["data"]
+    assert b'"runner_done_seen": false' in uploads[1]["data"]
