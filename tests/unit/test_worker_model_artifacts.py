@@ -149,6 +149,23 @@ def test_runner_markers_seen_requires_exact_marker_lines():
     assert done_seen is False
 
 
+def test_build_generation_messages_parses_embedded_chat_template():
+    jobs = _load_jobs_module()
+
+    prompt = (
+        "<|im_start|>system\nSystem instructions\n<|im_end|>\n"
+        "<|im_start|>user\nBuild a box\n<|im_end|>\n"
+        "<|im_start|>assistant\n"
+    )
+
+    messages = jobs._build_generation_messages(prompt, "design", "mm", 0.1)
+
+    assert messages == [
+        {"role": "system", "content": "System instructions"},
+        {"role": "user", "content": "Build a box"},
+    ]
+
+
 def test_run_freecad_headless_executes_runner_script_without_console_flag(monkeypatch):
     jobs = _load_jobs_module()
 
@@ -193,11 +210,67 @@ def test_run_freecad_headless_executes_runner_script_without_console_flag(monkey
     assert (stdout, stderr, returncode) == ("RUNNER:START\nRUNNER:DONE\n", "", 0)
 
 
-def test_run_repair_loop_job_rejects_syntax_invalid_macro(monkeypatch):
+def test_run_repair_loop_job_repairs_truncated_syntax_invalid_macro(monkeypatch):
     jobs = _load_jobs_module()
 
     uploads = []
+    chat_calls = []
+    responses = iter([
+        "import FreeCAD\nfoo = (",
+        "import FreeCAD as App\nApp.newDocument('Model')\n",
+    ])
 
+    def fake_chat(messages, **_kwargs):
+        chat_calls.append(messages)
+        return next(responses)
+
+    monkeypatch.setattr(jobs, "chat", fake_chat)
+    monkeypatch.setattr(jobs, "_detect_freecadcmd", lambda: "/usr/bin/freecadcmd")
+
+    def fake_run_freecad_headless(_freecadcmd, _macro_path, outdir, _export, _timeout_seconds):
+        outdir_path = Path(outdir)
+        (outdir_path / "model.FCStd").write_bytes(b"fcstd-bytes")
+        (outdir_path / "model.step").write_bytes(b"step-bytes")
+        return "RUNNER:START\nRUNNER:DONE\n", "", 0
+
+    monkeypatch.setattr(jobs, "_run_freecad_headless", fake_run_freecad_headless)
+    monkeypatch.setattr(
+        jobs,
+        "put_object",
+        lambda key, data, content_type="application/octet-stream": uploads.append(
+            {"key": key, "data": data, "content_type": content_type}
+        ),
+    )
+
+    result = jobs.run_repair_loop_job(
+        job_id="job-syntax-repair",
+        session_id="session-syntax-repair",
+        user_message_id="message-syntax-repair",
+        prompt="broken macro",
+        max_repair_iterations=2,
+    )
+
+    assert result["passed"] is True
+    assert result["iterations"] == 2
+    assert result["issues"] == [
+        "generated macro failed syntax check: SyntaxError: '(' was never closed (line 2); generation may have been truncated"
+    ]
+    assert len(chat_calls) == 2
+    assert "You previously generated this FreeCAD macro" in chat_calls[1][1]["content"]
+    assert [a["kind"] for a in result["artifacts"]] == [
+        "freecad_macro_py",
+        "freecad_model_fcstd",
+        "freecad_model_step",
+        "job_diagnostics_json",
+    ]
+    assert uploads[0]["data"].decode("utf-8") == "import FreeCAD as App\nApp.newDocument('Model')\n"
+    assert b'"generation_attempts": 2' in uploads[3]["data"]
+
+
+def test_run_repair_loop_job_still_fails_after_all_repair_attempts(monkeypatch):
+    jobs = _load_jobs_module()
+
+    uploads = []
     monkeypatch.setattr(jobs, "chat", lambda *_args, **_kwargs: "import FreeCAD\nfoo = (")
     monkeypatch.setattr(jobs, "_detect_freecadcmd", lambda: "/usr/bin/freecadcmd")
     monkeypatch.setattr(
@@ -213,11 +286,14 @@ def test_run_repair_loop_job_rejects_syntax_invalid_macro(monkeypatch):
         session_id="session-syntax",
         user_message_id="message-syntax",
         prompt="broken macro",
+        max_repair_iterations=2,
     )
 
     assert result["passed"] is False
+    assert result["iterations"] == 2
     assert result["issues"] == [
-        "generated macro failed syntax check: SyntaxError: '(' was never closed (line 2)"
+        "generated macro failed syntax check: SyntaxError: '(' was never closed (line 2); generation may have been truncated",
+        "generated macro failed syntax check: SyntaxError: '(' was never closed (line 2); generation may have been truncated",
     ]
     assert [a["kind"] for a in result["artifacts"]] == [
         "freecad_macro_py",
@@ -226,7 +302,7 @@ def test_run_repair_loop_job_rejects_syntax_invalid_macro(monkeypatch):
     ]
     assert b'Generated macro was empty; writing a safe placeholder.' in uploads[0]["data"]
     assert b'generated macro failed syntax check' in uploads[1]["data"]
-    assert b'"runner_markers_seen"' in uploads[1]["data"]
+    assert b'"generation_attempts": 2' in uploads[1]["data"]
 
 
 def test_run_freecad_headless_falls_back_to_console_exec_when_script_argument_is_ignored(monkeypatch):

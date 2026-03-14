@@ -1,17 +1,21 @@
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Any
 
 from worker.llm import chat
+from worker.prompts import build_generate_prompt, build_repair_prompt
 from worker.storage import put_object
 
 
 RUNNER_START_MARKER = "RUNNER:START"
 RUNNER_DONE_MARKER = "RUNNER:DONE"
+_TEMPLATE_ROLE_RE = re.compile(r"<\|im_start\|>(system|user|assistant)\n", re.IGNORECASE)
 
 
 def _sha256_bytes(data: bytes) -> str:
@@ -132,13 +136,115 @@ def _llm_generation_budget(timeout_seconds: int) -> dict[str, int | float]:
     small slice for uploads/cleanup and use a single bounded attempt.
     """
     total = max(60, int(timeout_seconds or 300))
-    reserved_for_cleanup = min(120, max(30, total // 8))
+    reserved_for_cleanup = min(180, max(45, total // 6))
     request_timeout = max(30, total - reserved_for_cleanup)
+    max_tokens = 1200 if total >= 300 else 800
     return {
         "timeout_s": float(request_timeout),
         "max_attempts": 1,
-        "max_tokens": 400,
+        "max_tokens": max_tokens,
     }
+
+
+def _looks_like_chat_template(prompt: str) -> bool:
+    s = prompt.strip()
+    return "<|im_start|>" in s and "<|im_end|>" in s
+
+
+def _parse_chat_template_prompt(prompt: str) -> list[dict[str, str]]:
+    messages: list[dict[str, str]] = []
+    matches = list(_TEMPLATE_ROLE_RE.finditer(prompt))
+    if not matches:
+        return []
+
+    for idx, match in enumerate(matches):
+        role = match.group(1).lower()
+        start = match.end()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(prompt)
+        block = prompt[start:end]
+        content = block.split("<|im_end|>", 1)[0].strip()
+        if role == "assistant" and not content:
+            continue
+        messages.append({"role": role, "content": content})
+    return messages
+
+
+def _build_generation_messages(prompt: str, mode: str | None, units: str | None, tolerance_mm: float | None) -> list[dict[str, str]]:
+    if _looks_like_chat_template(prompt):
+        parsed = _parse_chat_template_prompt(prompt)
+        if parsed:
+            return parsed
+    return build_generate_prompt(prompt, mode or "design", units or "mm", tolerance_mm if tolerance_mm is not None else 0.1)
+
+
+def _compile_macro_or_error(macro_code: str, filename: str) -> str | None:
+    try:
+        compile(macro_code, filename, "exec")
+        return None
+    except SyntaxError as exc:
+        maybe_truncated = ""
+        if exc.lineno and exc.lineno >= max(1, len(macro_code.splitlines()) - 2):
+            maybe_truncated = "; generation may have been truncated"
+        return f"generated macro failed syntax check: SyntaxError: {exc.msg} (line {exc.lineno}){maybe_truncated}"
+
+
+def _generate_macro_with_repairs(
+    *,
+    prompt: str,
+    mode: str | None,
+    units: str | None,
+    tolerance_mm: float | None,
+    llm_budget: dict[str, int | float],
+    max_repair_iterations: int,
+) -> tuple[str, str, list[str], int]:
+    issues: list[str] = []
+    messages = _build_generation_messages(prompt, mode, units, tolerance_mm)
+    last_macro = ""
+    attempts = max(1, int(max_repair_iterations or 1))
+
+    for iteration in range(1, attempts + 1):
+        try:
+            macro_code = chat(
+                messages,
+                timeout_s=float(llm_budget["timeout_s"]),
+                max_attempts=int(llm_budget["max_attempts"]),
+                max_tokens=int(llm_budget["max_tokens"]),
+                stop=["<|im_end|>", "</s>", "<|endoftext|>"],
+            )
+        except Exception as exc:
+            reason = f"llm request failed: {type(exc).__name__}: {exc}"
+            issues.append(reason)
+            return "", reason, issues, iteration
+
+        raw_macro_code = macro_code if isinstance(macro_code, str) else ""
+        last_macro = raw_macro_code
+        if not raw_macro_code.strip():
+            reason = "llm returned an empty response"
+            issues.append(reason)
+            return "", reason, issues, iteration
+
+        syntax_issue = _compile_macro_or_error(raw_macro_code, f"generation_{iteration}.py")
+        if syntax_issue is None:
+            return raw_macro_code, "", issues, iteration
+
+        issues.append(syntax_issue)
+        if iteration >= attempts:
+            return raw_macro_code, syntax_issue, issues, iteration
+
+        repair_issue = {
+            "rule_code": "python_syntax_error",
+            "object_name": f"generation_{iteration}.py",
+            "message": syntax_issue,
+        }
+        messages = build_repair_prompt(
+            prompt,
+            raw_macro_code,
+            [repair_issue],
+            units or "mm",
+            tolerance_mm if tolerance_mm is not None else 0.1,
+        )
+
+    return last_macro, "llm returned no usable macro", issues, attempts
 
 
 def run_repair_loop_job(
@@ -172,17 +278,6 @@ def run_repair_loop_job(
             "stl": bool(export.get("stl", False)),
         }
 
-    messages = [
-        {
-            "role": "system",
-            "content": "You are a CAD assistant. Output ONLY valid Python code for a FreeCAD macro. Do not wrap in markdown fences. Do not include explanations.",
-        },
-        {
-            "role": "user",
-            "content": f"Prompt: {prompt}\nUnits: {units or 'mm'}\nTolerance(mm): {tolerance_mm or 0.1}\n",
-        },
-    ]
-
     artifacts: list[dict] = []
     issues: list[str] = []
     placeholder_reason: str | None = None
@@ -201,40 +296,25 @@ def run_repair_loop_job(
 
     llm_budget = _llm_generation_budget(timeout_seconds)
 
-    try:
-        macro_code = chat(
-            messages,
-            timeout_s=float(llm_budget["timeout_s"]),
-            max_attempts=int(llm_budget["max_attempts"]),
-            max_tokens=int(llm_budget["max_tokens"]),
-            stop=["<|im_end|>", "</s>", "<|endoftext|>"],
-        )
-    except Exception as exc:
-        macro_code = ""
-        placeholder_reason = f"llm request failed: {type(exc).__name__}: {exc}"
-        issues.append(placeholder_reason)
-    raw_macro_code = macro_code if isinstance(macro_code, str) else ""
+    raw_macro_code, generation_reason, generation_issues, generation_attempts = _generate_macro_with_repairs(
+        prompt=prompt,
+        mode=mode,
+        units=units,
+        tolerance_mm=tolerance_mm,
+        llm_budget=llm_budget,
+        max_repair_iterations=max_repair_iterations,
+    )
+    issues.extend(generation_issues)
 
-    if not raw_macro_code.strip() and not placeholder_reason:
-        placeholder_reason = "llm returned an empty response"
-        issues.append(placeholder_reason)
-
-    if raw_macro_code.strip() and not placeholder_reason:
-        try:
-            compile(raw_macro_code, f"{user_message_id}.py", "exec")
-        except SyntaxError as exc:
-            placeholder_reason = (
-                f"generated macro failed syntax check: SyntaxError: {exc.msg}"
-                f" (line {exc.lineno})"
-            )
-            issues.append(placeholder_reason)
-
-    if placeholder_reason:
+    if generation_reason:
+        placeholder_reason = generation_reason
         macro_code = (
             "# Generated macro was empty; writing a safe placeholder.\n"
             "import FreeCAD as App\n"
             "App.newDocument('Model')\n"
         )
+    else:
+        macro_code = raw_macro_code
 
     macro_bytes = macro_code.encode("utf-8")
     macro_key = f"sessions/{session_id}/macros/{user_message_id}.gen0.py"
@@ -303,6 +383,7 @@ def run_repair_loop_job(
         "max_repair_iterations": max_repair_iterations,
         "timeout_seconds": timeout_seconds,
         "llm_budget": llm_budget,
+        "generation_attempts": generation_attempts,
         "placeholder_used": bool(placeholder_reason),
         "placeholder_reason": placeholder_reason,
         "raw_macro_chars": len(raw_macro_code),
@@ -336,7 +417,7 @@ def run_repair_loop_job(
         "session_id": session_id,
         "user_message_id": user_message_id,
         "passed": not bool(placeholder_reason),
-        "iterations": 1,
+        "iterations": generation_attempts,
         "issues": issues,
         "artifacts": artifacts,
     }
