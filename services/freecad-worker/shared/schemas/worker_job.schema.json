@@ -35,17 +35,17 @@
     "inputs": {
       "type": "object",
       "required": [
-        "macro_object_key",
+        "macro_path",
         "units",
         "tolerance_mm",
         "manufacturing_profile",
         "export"
       ],
       "properties": {
-        "macro_object_key": {
+        "macro_path": {
           "type": "string"
         },
-        "base_fcstd_object_key": {
+        "base_fcstd_path": {
           "type": [
             "string",
             "null"
@@ -71,11 +71,6 @@
         },
         "export": {
           "type": "object",
-          "required": [
-            "fcstd",
-            "step",
-            "stl"
-          ],
           "properties": {
             "fcstd": {
               "type": "boolean"
@@ -86,21 +81,26 @@
             "stl": {
               "type": "boolean"
             }
-          }
+          },
+          "required": [
+            "fcstd",
+            "step",
+            "stl"
+          ]
         }
       }
     },
     "output": {
       "type": "object",
       "required": [
-        "reports_prefix",
-        "artifacts_prefix"
+        "artifact_dir",
+        "reports_dir"
       ],
       "properties": {
-        "reports_prefix": {
+        "artifact_dir": {
           "type": "string"
         },
-        "artifacts_prefix": {
+        "reports_dir": {
           "type": "string"
         }
       }
@@ -116,6 +116,9 @@
           "type": "integer"
         },
         "max_repair_iterations": {
+          "type": "integer"
+        },
+        "llm_max_tokens": {
           "type": "integer"
         }
       }

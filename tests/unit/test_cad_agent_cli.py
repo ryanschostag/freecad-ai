@@ -168,3 +168,51 @@ def test_job_wait_accepts_positional_and_aliases(cli, monkeypatch):
 
     rc = cli.cmd_job_wait(c, args)
     assert rc == 0
+
+
+def test_message_send_includes_default_llm_max_tokens(cli):
+    args = _parse(
+        cli,
+        [
+            "message",
+            "send",
+            "--session",
+            "sid",
+            "--prompt",
+            "Create a box",
+        ],
+    )
+
+    c = FakeClient()
+    rc = cli.cmd_message_send(c, args)
+    assert rc == 0
+
+    method, path, payload = c.calls[0]
+    assert method == "POST"
+    assert path == "/v1/sessions/sid/messages"
+    assert payload["llm_max_tokens"] == 1200
+
+
+def test_message_send_allows_overriding_llm_max_tokens(cli):
+    args = _parse(
+        cli,
+        [
+            "message",
+            "send",
+            "--session",
+            "sid",
+            "--prompt",
+            "Create a box",
+            "--llm-max-tokens",
+            "256",
+        ],
+    )
+
+    c = FakeClient()
+    rc = cli.cmd_message_send(c, args)
+    assert rc == 0
+
+    method, path, payload = c.calls[0]
+    assert method == "POST"
+    assert path == "/v1/sessions/sid/messages"
+    assert payload["llm_max_tokens"] == 256
