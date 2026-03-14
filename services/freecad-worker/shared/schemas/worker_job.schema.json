@@ -35,17 +35,17 @@
     "inputs": {
       "type": "object",
       "required": [
-        "macro_path",
+        "macro_object_key",
         "units",
         "tolerance_mm",
         "manufacturing_profile",
         "export"
       ],
       "properties": {
-        "macro_path": {
+        "macro_object_key": {
           "type": "string"
         },
-        "base_fcstd_path": {
+        "base_fcstd_object_key": {
           "type": [
             "string",
             "null"
@@ -71,6 +71,11 @@
         },
         "export": {
           "type": "object",
+          "required": [
+            "fcstd",
+            "step",
+            "stl"
+          ],
           "properties": {
             "fcstd": {
               "type": "boolean"
@@ -81,26 +86,21 @@
             "stl": {
               "type": "boolean"
             }
-          },
-          "required": [
-            "fcstd",
-            "step",
-            "stl"
-          ]
+          }
         }
       }
     },
     "output": {
       "type": "object",
       "required": [
-        "artifact_dir",
-        "reports_dir"
+        "reports_prefix",
+        "artifacts_prefix"
       ],
       "properties": {
-        "artifact_dir": {
+        "reports_prefix": {
           "type": "string"
         },
-        "reports_dir": {
+        "artifacts_prefix": {
           "type": "string"
         }
       }

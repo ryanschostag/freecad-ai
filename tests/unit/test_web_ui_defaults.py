@@ -10,6 +10,7 @@ def test_web_ui_uses_cpu_friendly_default_timeout_and_polling_tolerance():
     assert 'value="900"' in html
     assert 'parseInt($("timeoutSeconds").value || "900", 10)' in js
     assert 'if (consecutiveFailures >= 5)' in js
+
     assert 'id="llmMaxTokens"' in html
     assert 'value="1200"' in html
     assert 'llm_max_tokens: parseInt($("llmMaxTokens").value || "1200", 10)' in js
