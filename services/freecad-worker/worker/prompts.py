@@ -11,6 +11,11 @@ Rules:
 - Use millimeters by default unless told otherwise.
 - Avoid unnecessary constraints and avoid redundant constraints.
 - Always create or reuse a FreeCAD document.
+- The worker handles FCStd, STEP, and STL export after your macro finishes.
+- Do not call FreeCAD.saveDocument, App.saveDocument, Import.export, Mesh.export, or doc.saveAs in the generated macro.
+- Leave one or more final exportable shape objects in the active document instead.
+- Use `import FreeCAD as App` and refer to the active document through `App.ActiveDocument` or a local `doc` variable.
+- Avoid assigning the result of `shape.translate(...)` or similar mutating methods because they usually return `None`; copy the shape first, then mutate the copy.
 """
 
 def build_generate_prompt(user_prompt: str, mode: str, units: str, tolerance_mm: float) -> list[dict[str, str]]:

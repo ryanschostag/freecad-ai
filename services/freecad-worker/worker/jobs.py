@@ -138,7 +138,7 @@ def _llm_generation_budget(timeout_seconds: int) -> dict[str, int | float]:
     total = max(60, int(timeout_seconds or 300))
     reserved_for_cleanup = min(180, max(45, total // 6))
     request_timeout = max(30, total - reserved_for_cleanup)
-    max_tokens = 1200 if total >= 300 else 800
+    max_tokens = 400
     return {
         "timeout_s": float(request_timeout),
         "max_attempts": 1,
@@ -186,6 +186,46 @@ def _compile_macro_or_error(macro_code: str, filename: str) -> str | None:
         if exc.lineno and exc.lineno >= max(1, len(macro_code.splitlines()) - 2):
             maybe_truncated = "; generation may have been truncated"
         return f"generated macro failed syntax check: SyntaxError: {exc.msg} (line {exc.lineno}){maybe_truncated}"
+
+
+def _classify_runtime_issue(stderr: str) -> dict[str, str] | None:
+    if not stderr.strip():
+        return None
+    for line in stderr.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped == '>>>':
+            continue
+        if 'AttributeError:' in stripped and 'saveDocument' in stripped:
+            return {
+                "rule_code": "forbidden_export_call",
+                "object_name": "generated_macro",
+                "message": "Do not call FreeCAD.saveDocument/App.saveDocument or perform exports inside the macro. Leave exportable objects in the active document and let the worker export them.",
+            }
+    tail = "\n".join([ln for ln in stderr.splitlines() if ln.strip()][-12:])
+    return {
+        "rule_code": "runtime_execution_error",
+        "object_name": "generated_macro",
+        "message": tail[:4000],
+    }
+
+
+def _runtime_repair_messages(
+    *,
+    prompt: str,
+    macro_code: str,
+    stderr: str,
+    units: str | None,
+    tolerance_mm: float | None,
+) -> list[dict[str, str]]:
+    issue = _classify_runtime_issue(stderr)
+    issues = [issue] if issue else []
+    return build_repair_prompt(
+        prompt,
+        macro_code,
+        issues,
+        units or "mm",
+        tolerance_mm if tolerance_mm is not None else 0.1,
+    )
 
 
 def _generate_macro_with_repairs(
@@ -325,20 +365,36 @@ def run_repair_loop_job(
         freecadcmd = _detect_freecadcmd()
         render_result["freecadcmd"] = freecadcmd
         if freecadcmd:
-            with tempfile.TemporaryDirectory() as tmpdir:
-                macro_path = Path(tmpdir) / f"{user_message_id}.py"
-                macro_path.write_text(macro_code, encoding="utf-8")
-                model_outdir = Path(tmpdir) / "models"
-                model_outdir.mkdir(parents=True, exist_ok=True)
-                try:
-                    stdout, stderr, returncode = _run_freecad_headless(
-                        freecadcmd,
-                        str(macro_path),
-                        str(model_outdir),
-                        export_flags,
-                        timeout_seconds,
-                    )
+            attempt_limit = max(1, int(max_repair_iterations or 1))
+            current_macro_code = macro_code
+            current_raw_macro_code = raw_macro_code
+            current_generation_attempts = generation_attempts
+            for render_attempt in range(1, attempt_limit + 1):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    macro_path = Path(tmpdir) / f"{user_message_id}.py"
+                    macro_path.write_text(current_macro_code, encoding="utf-8")
+                    model_outdir = Path(tmpdir) / "models"
+                    model_outdir.mkdir(parents=True, exist_ok=True)
+                    try:
+                        stdout, stderr, returncode = _run_freecad_headless(
+                            freecadcmd,
+                            str(macro_path),
+                            str(model_outdir),
+                            export_flags,
+                            timeout_seconds,
+                        )
+                    except Exception as exc:
+                        render_result["stderr"] = f"{type(exc).__name__}: {exc}"
+                        issues.append(f"freecad execution failed: {type(exc).__name__}: {exc}")
+                        break
+
                     runner_start_seen, runner_done_seen = _runner_markers(stdout, stderr)
+                    model_artifacts = _collect_model_artifacts(
+                        session_id=session_id,
+                        user_message_id=user_message_id,
+                        outdir=str(model_outdir),
+                        export=export_flags,
+                    )
                     render_result.update({
                         "executed": True,
                         "stdout": stdout,
@@ -347,15 +403,52 @@ def run_repair_loop_job(
                         "runner_start_seen": runner_start_seen,
                         "runner_done_seen": runner_done_seen,
                         "runner_markers_seen": runner_start_seen and runner_done_seen,
+                        "uploaded_model_kinds": [artifact["kind"] for artifact in model_artifacts],
                     })
-                    model_artifacts = _collect_model_artifacts(
-                        session_id=session_id,
-                        user_message_id=user_message_id,
-                        outdir=str(model_outdir),
-                        export=export_flags,
-                    )
+
+                    runtime_issue = _classify_runtime_issue(stderr) if returncode != 0 else None
+                    if runtime_issue and render_attempt < attempt_limit:
+                        repair_messages = _runtime_repair_messages(
+                            prompt=prompt,
+                            macro_code=current_macro_code,
+                            stderr=stderr,
+                            units=units,
+                            tolerance_mm=tolerance_mm,
+                        )
+                        try:
+                            repaired_macro = chat(
+                                repair_messages,
+                                timeout_s=float(llm_budget["timeout_s"]),
+                                max_attempts=int(llm_budget["max_attempts"]),
+                                max_tokens=int(llm_budget["max_tokens"]),
+                                stop=["<|im_end|>", "</s>", "<|endoftext|>"],
+                            )
+                        except Exception as exc:
+                            issues.append(f"llm request failed: {type(exc).__name__}: {exc}")
+                            issues.append(f"freecad execution failed with return code {returncode}")
+                            break
+                        repaired_macro = repaired_macro if isinstance(repaired_macro, str) else ""
+                        syntax_issue = _compile_macro_or_error(repaired_macro, f"runtime_repair_{render_attempt}.py") if repaired_macro.strip() else "llm returned an empty response"
+                        if syntax_issue is None:
+                            issues.append(runtime_issue["message"])
+                            current_macro_code = repaired_macro
+                            current_raw_macro_code = repaired_macro
+                            current_generation_attempts += 1
+                            continue
+                        issues.append(runtime_issue["message"])
+                        issues.append(syntax_issue)
+                        current_generation_attempts += 1
+                        placeholder_reason = syntax_issue
+                        current_macro_code = (
+                            "# Generated macro was empty; writing a safe placeholder.\n"
+                            "import FreeCAD as App\n"
+                            "App.newDocument('Model')\n"
+                        )
+                        macro_code = current_macro_code
+                        raw_macro_code = current_raw_macro_code
+                        break
+
                     artifacts.extend(model_artifacts)
-                    render_result["uploaded_model_kinds"] = [artifact["kind"] for artifact in model_artifacts]
                     if returncode != 0:
                         issues.append(f"freecad execution failed with return code {returncode}")
                     elif runner_start_seen and not runner_done_seen and not model_artifacts:
@@ -364,9 +457,12 @@ def run_repair_loop_job(
                         issues.append("freecad process returned success but runner script did not execute")
                     if not model_artifacts:
                         issues.append("freecad execution completed but did not produce any model artifacts")
-                except Exception as exc:
-                    render_result["stderr"] = f"{type(exc).__name__}: {exc}"
-                    issues.append(f"freecad execution failed: {type(exc).__name__}: {exc}")
+                    macro_code = current_macro_code
+                    raw_macro_code = current_raw_macro_code
+                    generation_attempts = current_generation_attempts
+                    break
+            else:
+                generation_attempts = current_generation_attempts
         else:
             issues.append("freecadcmd not found; skipping model export")
 

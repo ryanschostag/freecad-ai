@@ -380,3 +380,72 @@ def test_run_repair_loop_job_reports_runner_started_but_not_completed(monkeypatc
     ]
     assert b'"runner_start_seen": true' in uploads[1]["data"]
     assert b'"runner_done_seen": false' in uploads[1]["data"]
+
+
+def test_run_repair_loop_job_repairs_runtime_macro_error_and_exports_models(monkeypatch):
+    jobs = _load_jobs_module()
+
+    uploads = []
+    chat_calls = []
+    responses = iter([
+        "import FreeCAD\nFreeCAD.saveDocument(\"Model.FCStd\")\n",
+        "import FreeCAD as App\nApp.newDocument(\"Model\")\n",
+    ])
+
+    def fake_chat(messages, **_kwargs):
+        chat_calls.append(messages)
+        return next(responses)
+
+    monkeypatch.setattr(jobs, "chat", fake_chat)
+    monkeypatch.setattr(jobs, "_detect_freecadcmd", lambda: "/usr/bin/freecadcmd")
+
+    call_count = {"n": 0}
+
+    def fake_run_freecad_headless(_freecadcmd, _macro_path, outdir, _export, _timeout_seconds):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return (
+                "RUNNER:START\n",
+                "Traceback...\nAttributeError: module 'FreeCAD' has no attribute 'saveDocument'\n",
+                1,
+            )
+        outdir_path = Path(outdir)
+        (outdir_path / "model.FCStd").write_bytes(b"fcstd-bytes")
+        (outdir_path / "model.step").write_bytes(b"step-bytes")
+        return "RUNNER:START\nRUNNER:DONE\n", "", 0
+
+    monkeypatch.setattr(jobs, "_run_freecad_headless", fake_run_freecad_headless)
+    monkeypatch.setattr(
+        jobs,
+        "put_object",
+        lambda key, data, content_type="application/octet-stream": uploads.append(
+            {"key": key, "data": data, "content_type": content_type}
+        ),
+    )
+
+    result = jobs.run_repair_loop_job(
+        job_id="job-runtime-repair",
+        session_id="session-runtime-repair",
+        user_message_id="message-runtime-repair",
+        prompt="create a simple box",
+        export={"fcstd": True, "step": True, "stl": False},
+        max_repair_iterations=2,
+    )
+
+    assert result["passed"] is True
+    assert result["iterations"] == 2
+    assert result["issues"] == [
+        "Do not call FreeCAD.saveDocument/App.saveDocument or perform exports inside the macro. Leave exportable objects in the active document and let the worker export them."
+    ]
+    assert len(chat_calls) == 2
+    assert "Validation issues:" in chat_calls[1][1]["content"]
+    assert "forbidden_export_call" in chat_calls[1][1]["content"]
+    assert [a["kind"] for a in result["artifacts"]] == [
+        "freecad_macro_py",
+        "freecad_model_fcstd",
+        "freecad_model_step",
+        "job_diagnostics_json",
+    ]
+    assert uploads[1]["key"] == "sessions/session-runtime-repair/models/message-runtime-repair.FCStd"
+    assert uploads[2]["key"] == "sessions/session-runtime-repair/models/message-runtime-repair.step"
+    assert b'"generation_attempts": 2' in uploads[3]["data"]
