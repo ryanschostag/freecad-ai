@@ -6,7 +6,6 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any
 
 from worker.llm import chat
 from worker.prompts import build_generate_prompt, build_repair_prompt
@@ -110,6 +109,53 @@ def _collect_model_artifacts(
     return artifacts
 
 
+def _gather_model_upload_entries(
+    *,
+    session_id: str,
+    user_message_id: str,
+    outdir: str,
+    export: dict[str, bool] | None = None,
+) -> list[dict[str, object]]:
+    entries: list[dict[str, object]] = []
+    outdir_path = Path(outdir)
+    if not outdir_path.exists():
+        return entries
+
+    requested_suffixes = []
+    export_flags = export or {"fcstd": True, "step": True, "stl": False}
+    if export_flags.get("fcstd", True):
+        requested_suffixes.append(".fcstd")
+    if export_flags.get("step", True):
+        requested_suffixes.extend([".step", ".stp"])
+    if export_flags.get("stl", False):
+        requested_suffixes.append(".stl")
+
+    candidates: dict[str, Path] = {}
+    for path in sorted(outdir_path.iterdir()):
+        if not path.is_file():
+            continue
+        suffix = path.suffix.lower()
+        if suffix not in {".fcstd", ".step", ".stp", ".stl"}:
+            continue
+        if requested_suffixes and suffix not in requested_suffixes:
+            continue
+        candidates.setdefault(suffix, path)
+
+    preferred_order = [".fcstd", ".step", ".stp", ".stl"]
+    for suffix in preferred_order:
+        path = candidates.get(suffix)
+        if not path:
+            continue
+        normalized_ext = ".step" if suffix == ".stp" else path.suffix
+        entries.append({
+            "key": f"sessions/{session_id}/models/{user_message_id}{normalized_ext}",
+            "data": path.read_bytes(),
+            "kind": _artifact_kind_for_model(path),
+            "content_type": _artifact_content_type(path),
+        })
+    return entries
+
+
 def _runner_markers(stdout: str, stderr: str) -> tuple[bool, bool]:
     start_seen = False
     done_seen = False
@@ -128,22 +174,14 @@ def _runner_markers_seen(stdout: str, stderr: str) -> bool:
 
 
 def _llm_generation_budget(timeout_seconds: int, llm_max_tokens: int | None = None) -> dict[str, int | float]:
-    """Keep the LLM call inside the enclosing RQ job timeout.
-
-    The queue timeout is enforced outside Python by RQ's work-horse process.
-    If we allow multiple long HTTP attempts, the work horse can be killed before
-    chat() returns or raises, leaving no diagnostics or artifacts. Reserve a
-    small slice for uploads/cleanup and use a single bounded attempt.
-    """
     total = max(60, int(timeout_seconds or 300))
     reserved_for_cleanup = min(180, max(45, total // 6))
     request_timeout = max(30, total - reserved_for_cleanup)
     configured_max_tokens = int(llm_max_tokens) if llm_max_tokens is not None else 1200
-    max_tokens = max(1, configured_max_tokens)
     return {
         "timeout_s": float(request_timeout),
         "max_attempts": 1,
-        "max_tokens": max_tokens,
+        "max_tokens": max(1, configured_max_tokens),
     }
 
 
@@ -187,6 +225,46 @@ def _compile_macro_or_error(macro_code: str, filename: str) -> str | None:
         if exc.lineno and exc.lineno >= max(1, len(macro_code.splitlines()) - 2):
             maybe_truncated = "; generation may have been truncated"
         return f"generated macro failed syntax check: SyntaxError: {exc.msg} (line {exc.lineno}){maybe_truncated}"
+
+
+def _classify_runtime_issue(stderr: str) -> dict[str, str] | None:
+    if not stderr.strip():
+        return None
+    for line in stderr.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped == ">>>":
+            continue
+        if "AttributeError:" in stripped and "saveDocument" in stripped:
+            return {
+                "rule_code": "forbidden_export_call",
+                "object_name": "generated_macro",
+                "message": "Do not call FreeCAD.saveDocument/App.saveDocument or perform exports inside the macro. Leave exportable objects in the active document and let the worker export them.",
+            }
+    tail = "\n".join([ln for ln in stderr.splitlines() if ln.strip()][-12:])
+    return {
+        "rule_code": "runtime_execution_error",
+        "object_name": "generated_macro",
+        "message": tail[:4000],
+    }
+
+
+def _runtime_repair_messages(
+    *,
+    prompt: str,
+    macro_code: str,
+    stderr: str,
+    units: str | None,
+    tolerance_mm: float | None,
+) -> list[dict[str, str]]:
+    issue = _classify_runtime_issue(stderr)
+    issues = [issue] if issue else []
+    return build_repair_prompt(
+        prompt,
+        macro_code,
+        issues,
+        units or "mm",
+        tolerance_mm if tolerance_mm is not None else 0.1,
+    )
 
 
 def _generate_macro_with_repairs(
@@ -248,6 +326,14 @@ def _generate_macro_with_repairs(
     return last_macro, "llm returned no usable macro", issues, attempts
 
 
+def _placeholder_macro() -> str:
+    return (
+        "# Generated macro was empty; writing a safe placeholder.\n"
+        "import FreeCAD as App\n"
+        "App.newDocument('Model')\n"
+    )
+
+
 def run_repair_loop_job(
     *,
     job_id: str,
@@ -262,8 +348,6 @@ def run_repair_loop_job(
     timeout_seconds: int = 300,
     llm_max_tokens: int | None = None,
 ):
-    """RQ entrypoint executed by the freecad-worker container."""
-
     export_list: list[str] = []
     export_flags: dict[str, bool] = {"fcstd": True, "step": True, "stl": False}
     if isinstance(export, list):
@@ -283,6 +367,7 @@ def run_repair_loop_job(
     artifacts: list[dict] = []
     issues: list[str] = []
     placeholder_reason: str | None = None
+    final_model_entries: list[dict[str, object]] = []
     render_result: dict[str, object] = {
         "attempted": False,
         "executed": False,
@@ -297,7 +382,6 @@ def run_repair_loop_job(
     }
 
     llm_budget = _llm_generation_budget(timeout_seconds, llm_max_tokens)
-
     raw_macro_code, generation_reason, generation_issues, generation_attempts = _generate_macro_with_repairs(
         prompt=prompt,
         mode=mode,
@@ -308,39 +392,44 @@ def run_repair_loop_job(
     )
     issues.extend(generation_issues)
 
+    macro_code = raw_macro_code if not generation_reason else _placeholder_macro()
     if generation_reason:
         placeholder_reason = generation_reason
-        macro_code = (
-            "# Generated macro was empty; writing a safe placeholder.\n"
-            "import FreeCAD as App\n"
-            "App.newDocument('Model')\n"
-        )
-    else:
-        macro_code = raw_macro_code
-
-    macro_bytes = macro_code.encode("utf-8")
-    macro_key = f"sessions/{session_id}/macros/{user_message_id}.gen0.py"
-    artifacts.append(_put_artifact(key=macro_key, data=macro_bytes, kind="freecad_macro_py", content_type="text/x-python"))
 
     if not placeholder_reason:
         render_result["attempted"] = True
         freecadcmd = _detect_freecadcmd()
         render_result["freecadcmd"] = freecadcmd
         if freecadcmd:
-            with tempfile.TemporaryDirectory() as tmpdir:
-                macro_path = Path(tmpdir) / f"{user_message_id}.py"
-                macro_path.write_text(macro_code, encoding="utf-8")
-                model_outdir = Path(tmpdir) / "models"
-                model_outdir.mkdir(parents=True, exist_ok=True)
-                try:
-                    stdout, stderr, returncode = _run_freecad_headless(
-                        freecadcmd,
-                        str(macro_path),
-                        str(model_outdir),
-                        export_flags,
-                        timeout_seconds,
-                    )
+            render_attempt_limit = max(1, int(max_repair_iterations or 1))
+            current_macro_code = macro_code
+            current_raw_macro_code = raw_macro_code
+            for render_attempt in range(1, render_attempt_limit + 1):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    macro_path = Path(tmpdir) / f"{user_message_id}.py"
+                    macro_path.write_text(current_macro_code, encoding="utf-8")
+                    model_outdir = Path(tmpdir) / "models"
+                    model_outdir.mkdir(parents=True, exist_ok=True)
+                    try:
+                        stdout, stderr, returncode = _run_freecad_headless(
+                            freecadcmd,
+                            str(macro_path),
+                            str(model_outdir),
+                            export_flags,
+                            timeout_seconds,
+                        )
+                    except Exception as exc:
+                        render_result["stderr"] = f"{type(exc).__name__}: {exc}"
+                        issues.append(f"freecad execution failed: {type(exc).__name__}: {exc}")
+                        break
+
                     runner_start_seen, runner_done_seen = _runner_markers(stdout, stderr)
+                    pending_model_uploads = _gather_model_upload_entries(
+                        session_id=session_id,
+                        user_message_id=user_message_id,
+                        outdir=str(model_outdir),
+                        export=export_flags,
+                    )
                     render_result.update({
                         "executed": True,
                         "stdout": stdout,
@@ -349,15 +438,55 @@ def run_repair_loop_job(
                         "runner_start_seen": runner_start_seen,
                         "runner_done_seen": runner_done_seen,
                         "runner_markers_seen": runner_start_seen and runner_done_seen,
+                        "uploaded_model_kinds": [entry["kind"] for entry in pending_model_uploads],
                     })
-                    model_artifacts = _collect_model_artifacts(
-                        session_id=session_id,
-                        user_message_id=user_message_id,
-                        outdir=str(model_outdir),
-                        export=export_flags,
-                    )
-                    artifacts.extend(model_artifacts)
-                    render_result["uploaded_model_kinds"] = [artifact["kind"] for artifact in model_artifacts]
+
+                    runtime_issue = _classify_runtime_issue(stderr) if returncode != 0 else None
+                    model_artifacts = []
+                    if runtime_issue and render_attempt < render_attempt_limit:
+                        repair_messages = _runtime_repair_messages(
+                            prompt=prompt,
+                            macro_code=current_macro_code,
+                            stderr=stderr,
+                            units=units,
+                            tolerance_mm=tolerance_mm,
+                        )
+                        try:
+                            repaired_macro = chat(
+                                repair_messages,
+                                timeout_s=float(llm_budget["timeout_s"]),
+                                max_attempts=int(llm_budget["max_attempts"]),
+                                max_tokens=int(llm_budget["max_tokens"]),
+                                stop=["<|im_end|>", "</s>", "<|endoftext|>"],
+                            )
+                        except Exception as exc:
+                            issues.append(f"llm request failed: {type(exc).__name__}: {exc}")
+                            issues.append(f"freecad execution failed with return code {returncode}")
+                            break
+                        repaired_macro = repaired_macro if isinstance(repaired_macro, str) else ""
+                        syntax_issue = _compile_macro_or_error(repaired_macro, f"runtime_repair_{render_attempt}.py") if repaired_macro.strip() else "llm returned an empty response"
+                        issues.append(runtime_issue["message"])
+                        generation_attempts += 1
+                        if syntax_issue is None:
+                            current_macro_code = repaired_macro
+                            current_raw_macro_code = repaired_macro
+                            continue
+                        issues.append(syntax_issue)
+                        placeholder_reason = syntax_issue
+                        current_macro_code = _placeholder_macro()
+                        current_raw_macro_code = repaired_macro
+                        break
+
+                    final_model_entries = pending_model_uploads
+                    model_artifacts = [
+                        {
+                            "kind": str(entry["kind"]),
+                            "object_key": str(entry["key"]),
+                            "bytes": len(entry["data"]),
+                            "sha256": _sha256_bytes(entry["data"]),
+                        }
+                        for entry in pending_model_uploads
+                    ]
                     if returncode != 0:
                         issues.append(f"freecad execution failed with return code {returncode}")
                     elif runner_start_seen and not runner_done_seen and not model_artifacts:
@@ -366,11 +495,23 @@ def run_repair_loop_job(
                         issues.append("freecad process returned success but runner script did not execute")
                     if not model_artifacts:
                         issues.append("freecad execution completed but did not produce any model artifacts")
-                except Exception as exc:
-                    render_result["stderr"] = f"{type(exc).__name__}: {exc}"
-                    issues.append(f"freecad execution failed: {type(exc).__name__}: {exc}")
+                    break
+            macro_code = current_macro_code
+            raw_macro_code = current_raw_macro_code
         else:
             issues.append("freecadcmd not found; skipping model export")
+
+    macro_key = f"sessions/{session_id}/macros/{user_message_id}.gen0.py"
+    artifacts.insert(0, _put_artifact(key=macro_key, data=macro_code.encode("utf-8"), kind="freecad_macro_py", content_type="text/x-python"))
+    for entry in final_model_entries:
+        artifacts.append(
+            _put_artifact(
+                key=str(entry["key"]),
+                data=entry["data"],
+                kind=str(entry["kind"]),
+                content_type=str(entry["content_type"]),
+            )
+        )
 
     diag = {
         "job_id": job_id,
@@ -395,25 +536,11 @@ def run_repair_loop_job(
         "issues": issues,
     }
     diag_key = f"sessions/{session_id}/diagnostics/{user_message_id}.diagnostics.json"
-    artifacts.append(
-        _put_artifact(
-            key=diag_key,
-            data=(json.dumps(diag, indent=2, sort_keys=True) + "\n").encode("utf-8"),
-            kind="job_diagnostics_json",
-            content_type="application/json",
-        )
-    )
+    artifacts.append(_put_artifact(key=diag_key, data=(json.dumps(diag, indent=2, sort_keys=True) + "\n").encode("utf-8"), kind="job_diagnostics_json", content_type="application/json"))
 
     if placeholder_reason:
         reason_key = f"sessions/{session_id}/diagnostics/{user_message_id}.empty_macro_reason.txt"
-        artifacts.append(
-            _put_artifact(
-                key=reason_key,
-                data=(placeholder_reason + "\n").encode("utf-8"),
-                kind="job_reason_txt",
-                content_type="text/plain",
-            )
-        )
+        artifacts.append(_put_artifact(key=reason_key, data=(placeholder_reason + "\n").encode("utf-8"), kind="job_reason_txt", content_type="text/plain"))
 
     return {
         "job_id": job_id,
