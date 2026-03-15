@@ -4,7 +4,9 @@ I would like you to expand the following features:
 
 - attached is the latest committed code (zip)
 - provide new code in zip file download
-- provide complete code for all files that were changed or newly added in plain text blocks for copy and paste as a backup in ase the download link fails to download the zip file
+- provide 2 sections: 1 with a list of the file paths that were updated; 1 with a list of new files
+- provide complete code for all files that were changed or newly added in plain text blocks for copy and paste as a backup in ase the
+ download link fails to download the zip file
 - provide clear instructions
 - cause no regressions
 - add regression tests for the new features
