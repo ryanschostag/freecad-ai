@@ -52,6 +52,18 @@ def _artifact_kind_for_model(path: Path) -> str:
     }.get(suffix, "freecad_model_file")
 
 
+def _expected_model_kinds(export: dict[str, bool] | None = None) -> list[str]:
+    export_flags = export or {"fcstd": True, "step": True, "stl": False}
+    kinds: list[str] = []
+    if export_flags.get("fcstd", True):
+        kinds.append("freecad_model_fcstd")
+    if export_flags.get("step", True):
+        kinds.append("freecad_model_step")
+    if export_flags.get("stl", False):
+        kinds.append("freecad_model_stl")
+    return kinds
+
+
 def _detect_freecadcmd() -> str | None:
     for candidate in ("freecadcmd", "FreeCADCmd", "/usr/bin/freecadcmd", "/usr/bin/FreeCADCmd"):
         resolved = shutil.which(candidate) if "/" not in candidate else candidate
@@ -196,11 +208,24 @@ def _classify_runtime_issue(stderr: str) -> dict[str, str] | None:
         stripped = line.strip()
         if not stripped or stripped == '>>>':
             continue
+        lowered = stripped.lower()
         if 'AttributeError:' in stripped and 'saveDocument' in stripped:
             return {
                 "rule_code": "forbidden_export_call",
                 "object_name": "generated_macro",
                 "message": "Do not call FreeCAD.saveDocument/App.saveDocument or perform exports inside the macro. Leave exportable objects in the active document and let the worker export them.",
+            }
+        if 'null shape' in lowered or 'validation:no_exportable_objects' in lowered:
+            return {
+                "rule_code": "null_or_nonexportable_shape",
+                "object_name": "generated_macro",
+                "message": "The macro created an object with a null or non-exportable shape. Ensure the final model creates real geometry and when using Part::Feature assign obj.Shape = shape after doc.addObject(...).",
+            }
+        if "has no attribute 'Name'" in stripped or 'has no attribute "Name"' in stripped:
+            return {
+                "rule_code": "runtime_execution_error",
+                "object_name": "generated_macro",
+                "message": "Do not assign document object properties like Name onto raw Part shapes. Create the shape first, then create a document object with doc.addObject('Part::Feature', 'Result') and assign obj.Shape = shape.",
             }
     tail = "\n".join([ln for ln in stderr.splitlines() if ln.strip()][-12:])
     return {
@@ -208,7 +233,6 @@ def _classify_runtime_issue(stderr: str) -> dict[str, str] | None:
         "object_name": "generated_macro",
         "message": tail[:4000],
     }
-
 
 def _runtime_repair_messages(
     *,
@@ -228,6 +252,39 @@ def _runtime_repair_messages(
         tolerance_mm if tolerance_mm is not None else 0.1,
     )
 
+
+
+
+def _upload_companion_fcmacro(*, session_id: str, user_message_id: str, macro_code: str) -> None:
+    macro_bytes = macro_code.encode("utf-8")
+    # FreeCAD's macro chooser expects .FCMacro files, so upload a companion copy
+    # alongside the plain Python source for direct loading in the desktop UI.
+    put_object(
+        f"sessions/{session_id}/macros/{user_message_id}.FCMacro",
+        macro_bytes,
+        content_type="text/plain",
+    )
+
+
+def _missing_expected_model_kinds(model_artifacts: list[dict], export: dict[str, bool] | None = None) -> list[str]:
+    produced = {str(a.get("kind")) for a in model_artifacts}
+    return [kind for kind in _expected_model_kinds(export) if kind not in produced]
+
+
+def _should_attempt_runtime_repair(
+    *,
+    returncode: int,
+    stderr: str,
+    model_artifacts: list[dict],
+    export: dict[str, bool] | None = None,
+) -> tuple[bool, dict[str, str] | None]:
+    issue = _classify_runtime_issue(stderr)
+    if issue is None:
+        return False, None
+    missing_expected = _missing_expected_model_kinds(model_artifacts, export)
+    if returncode != 0 or not model_artifacts or bool(missing_expected):
+        return True, issue
+    return False, issue
 
 def _generate_macro_with_repairs(
     *,
@@ -408,8 +465,13 @@ def run_repair_loop_job(
                         "uploaded_model_kinds": [artifact["kind"] for artifact in model_artifacts],
                     })
 
-                    runtime_issue = _classify_runtime_issue(stderr) if (stderr.strip() and not model_artifacts) else None
-                    if runtime_issue and render_attempt < attempt_limit:
+                    should_repair, runtime_issue = _should_attempt_runtime_repair(
+                        returncode=returncode,
+                        stderr=stderr,
+                        model_artifacts=model_artifacts,
+                        export=export_flags,
+                    )
+                    if should_repair and runtime_issue and render_attempt < attempt_limit:
                         repair_messages = _runtime_repair_messages(
                             prompt=prompt,
                             macro_code=current_macro_code,
@@ -500,6 +562,8 @@ def run_repair_loop_job(
         )
     )
 
+    _upload_companion_fcmacro(session_id=session_id, user_message_id=user_message_id, macro_code=macro_code)
+
     if placeholder_reason:
         reason_key = f"sessions/{session_id}/diagnostics/{user_message_id}.empty_macro_reason.txt"
         artifacts.append(
@@ -561,7 +625,12 @@ def main():
     if export_fcstd == "1":
         doc.saveAs(base + ".FCStd")
 
-    export_objs = [o for o in doc.Objects if hasattr(o, "Shape")]
+    export_objs = [
+        o for o in doc.Objects
+        if hasattr(o, "Shape") and getattr(o, "Shape") is not None and not o.Shape.isNull()
+    ]
+    if not export_objs:
+        print("VALIDATION:NO_EXPORTABLE_OBJECTS")
 
     if export_step == "1":
         try:

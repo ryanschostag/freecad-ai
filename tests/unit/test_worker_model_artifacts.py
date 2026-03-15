@@ -515,3 +515,103 @@ def test_run_repair_loop_job_repairs_runtime_macro_error_and_exports_models(monk
     assert uploads[1]["key"] == "sessions/session-runtime-repair/models/message-runtime-repair.FCStd"
     assert uploads[2]["key"] == "sessions/session-runtime-repair/models/message-runtime-repair.step"
     assert b'"generation_attempts": 2' in uploads[3]["data"]
+
+
+def test_run_repair_loop_job_uploads_companion_fcmacro_file(monkeypatch):
+    jobs = _load_jobs_module()
+
+    uploads = []
+
+    monkeypatch.setattr(jobs, "chat", lambda *_args, **_kwargs: "import FreeCAD as App\nApp.newDocument('Model')\n")
+    monkeypatch.setattr(jobs, "_detect_freecadcmd", lambda: None)
+    monkeypatch.setattr(
+        jobs,
+        "put_object",
+        lambda key, data, content_type="application/octet-stream": uploads.append(
+            {"key": key, "data": data, "content_type": content_type}
+        ),
+    )
+
+    result = jobs.run_repair_loop_job(
+        job_id="job-fcmacro",
+        session_id="session-fcmacro",
+        user_message_id="message-fcmacro",
+        prompt="create a simple cylinder",
+    )
+
+    assert result["passed"] is True
+    assert [a["kind"] for a in result["artifacts"]] == [
+        "freecad_macro_py",
+        "job_diagnostics_json",
+    ]
+    assert uploads[0]["key"] == "sessions/session-fcmacro/macros/message-fcmacro.gen0.py"
+    assert uploads[1]["key"] == "sessions/session-fcmacro/diagnostics/message-fcmacro.diagnostics.json"
+    assert uploads[2]["key"] == "sessions/session-fcmacro/macros/message-fcmacro.FCMacro"
+    assert uploads[2]["data"] == uploads[0]["data"]
+
+
+def test_run_repair_loop_job_repairs_null_shape_validation_when_step_export_missing(monkeypatch):
+    jobs = _load_jobs_module()
+
+    uploads = []
+    chat_calls = []
+    responses = iter([
+        "import FreeCAD as App\nobj = object()\n",
+        'import FreeCAD as App\nApp.newDocument("Model")\n',
+    ])
+
+    def fake_chat(messages, **_kwargs):
+        chat_calls.append(messages)
+        return next(responses)
+
+    monkeypatch.setattr(jobs, "chat", fake_chat)
+    monkeypatch.setattr(jobs, "_detect_freecadcmd", lambda: "/usr/bin/freecadcmd")
+
+    call_count = {"n": 0}
+
+    def fake_run_freecad_headless(_freecadcmd, _macro_path, outdir, _export, _timeout_seconds):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            outdir_path = Path(outdir)
+            (outdir_path / "model.FCStd").write_bytes(b"fcstd-bytes")
+            return (
+                "RUNNER:START\nRUNNER:DONE\n",
+                ">>> <Import> ExportOCAF2.cpp(387): Model1#Result has null shape\n>>> \n",
+                0,
+            )
+        outdir_path = Path(outdir)
+        (outdir_path / "model.FCStd").write_bytes(b"fcstd-fixed")
+        (outdir_path / "model.step").write_bytes(b"step-fixed")
+        return "RUNNER:START\nRUNNER:DONE\n", "", 0
+
+    monkeypatch.setattr(jobs, "_run_freecad_headless", fake_run_freecad_headless)
+    monkeypatch.setattr(
+        jobs,
+        "put_object",
+        lambda key, data, content_type="application/octet-stream": uploads.append(
+            {"key": key, "data": data, "content_type": content_type}
+        ),
+    )
+
+    result = jobs.run_repair_loop_job(
+        job_id="job-null-shape",
+        session_id="session-null-shape",
+        user_message_id="message-null-shape",
+        prompt="create a simple box",
+        export={"fcstd": True, "step": True, "stl": False},
+        max_repair_iterations=2,
+    )
+
+    assert result["passed"] is True
+    assert result["iterations"] == 2
+    assert len(chat_calls) == 2
+    assert "null_or_nonexportable_shape" in chat_calls[1][1]["content"]
+    assert [a["kind"] for a in result["artifacts"]] == [
+        "freecad_macro_py",
+        "freecad_model_fcstd",
+        "freecad_model_step",
+        "job_diagnostics_json",
+    ]
+    assert uploads[2]["key"] == "sessions/session-null-shape/models/message-null-shape.FCStd"
+    assert uploads[3]["key"] == "sessions/session-null-shape/models/message-null-shape.step"
+    assert uploads[5]["key"] == "sessions/session-null-shape/macros/message-null-shape.FCMacro"

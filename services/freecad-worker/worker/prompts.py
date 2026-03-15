@@ -16,6 +16,7 @@ Rules:
 - Leave one or more final exportable shape objects in the active document instead.
 - Use `import FreeCAD as App` and refer to the active document through `App.ActiveDocument` or a local `doc` variable.
 - Avoid assigning the result of `shape.translate(...)` or similar mutating methods because they usually return `None`; copy the shape first, then mutate the copy.
+- When creating a Part::Feature, call `obj = doc.addObject("Part::Feature", "Result")` and then assign `obj.Shape = shape`; do not pass the shape as an extra argument to `addObject` and do not assign document properties like `Name` on raw Part shapes.
 """
 
 def build_generate_prompt(user_prompt: str, mode: str, units: str, tolerance_mm: float) -> list[dict[str, str]]:
