@@ -562,8 +562,6 @@ def run_repair_loop_job(
         )
     )
 
-    _upload_companion_fcmacro(session_id=session_id, user_message_id=user_message_id, macro_code=macro_code)
-
     if placeholder_reason:
         reason_key = f"sessions/{session_id}/diagnostics/{user_message_id}.empty_macro_reason.txt"
         artifacts.append(
@@ -574,6 +572,8 @@ def run_repair_loop_job(
                 content_type="text/plain",
             )
         )
+
+    _upload_companion_fcmacro(session_id=session_id, user_message_id=user_message_id, macro_code=macro_code)
 
     return {
         "job_id": job_id,
