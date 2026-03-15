@@ -183,17 +183,17 @@ services:
       - LLM_CHAT_TEMPLATE=${LLM_CHAT_TEMPLATE:-qwen2}
     entrypoint: ["/bin/sh", "-lc"]
     command: >
-      MODEL_FILE_NAME="$(basename "$LLM_MODEL_PATH")";
-      MODEL_STATE_DIR_NAME="${MODEL_FILE_NAME//./-}";
-      mkdir -p "/models/${MODEL_STATE_DIR_NAME}/state";
+      MODEL_FILE_NAME="$$(basename "$$LLM_MODEL_PATH")";
+      MODEL_STATE_DIR_NAME="$${MODEL_FILE_NAME//./-}";
+      mkdir -p "/models/$${MODEL_STATE_DIR_NAME}/state";
       exec llama-server
       --host 0.0.0.0
       --port 8000
-      --model "$LLM_MODEL_PATH"
-      --slot-save-path "/models/${MODEL_STATE_DIR_NAME}/state"
-      --chat-template "$LLM_CHAT_TEMPLATE"
-      --threads "$LLM_THREADS"
-      --ctx-size "$LLM_CTX_SIZE"
+      --model "$$LLM_MODEL_PATH"
+      --slot-save-path "/models/$${MODEL_STATE_DIR_NAME}/state"
+      --chat-template "$$LLM_CHAT_TEMPLATE"
+      --threads "$$LLM_THREADS"
+      --ctx-size "$$LLM_CTX_SIZE"
     ports:
       - "8000:8000"
     volumes:
@@ -210,18 +210,18 @@ services:
       - LLM_N_GPU_LAYERS=${LLM_N_GPU_LAYERS:-999}
     entrypoint: ["/bin/sh", "-lc"]
     command: >
-      MODEL_FILE_NAME="$(basename "$LLM_MODEL_PATH")";
-      MODEL_STATE_DIR_NAME="${MODEL_FILE_NAME//./-}";
-      mkdir -p "/models/${MODEL_STATE_DIR_NAME}/state";
+      MODEL_FILE_NAME="$$(basename "$$LLM_MODEL_PATH")";
+      MODEL_STATE_DIR_NAME="$${MODEL_FILE_NAME//./-}";
+      mkdir -p "/models/$${MODEL_STATE_DIR_NAME}/state";
       exec llama-server
       --host 0.0.0.0
       --port 8000
-      --model "$LLM_MODEL_PATH"
-      --slot-save-path "/models/${MODEL_STATE_DIR_NAME}/state"
-      --chat-template "$LLM_CHAT_TEMPLATE"
-      --threads "$LLM_THREADS"
-      --ctx-size "$LLM_CTX_SIZE"
-      --n-gpu-layers "$LLM_N_GPU_LAYERS"
+      --model "$$LLM_MODEL_PATH"
+      --slot-save-path "/models/$${MODEL_STATE_DIR_NAME}/state"
+      --chat-template "$$LLM_CHAT_TEMPLATE"
+      --threads "$$LLM_THREADS"
+      --ctx-size "$$LLM_CTX_SIZE"
+      --n-gpu-layers "$$LLM_N_GPU_LAYERS"
     ports:
       - "8000:8000"
     volumes:
