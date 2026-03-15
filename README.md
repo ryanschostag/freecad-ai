@@ -100,6 +100,9 @@ The `docs/` directory contains focused, task-oriented documentation:
 - **`docs/testing.md`**  
   Canonical guide for running pytest inside Docker, including the test-runner container and CI usage.
 
+- **`docs/llm-state-management.md`**  
+  Explains how llama.cpp derives a per-model persistent state directory under `models/<model-file-with-dots-replaced-by-hyphens>/state` and how the Docker services mount it from the host.
+
 - **`docs/architecture.drawio`**  
   Editable system architecture diagram (open with draw.io / diagrams.net).  
   Shows API, worker, Redis, Postgres, LLM, and object storage interactions.
