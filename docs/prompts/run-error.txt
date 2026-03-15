@@ -8,8 +8,7 @@ There was an error running a command:
 - double-check any syntax and logic errors you created and fix those
 - provide new code in zip file download
 - provide 2 sections: 1 with a list of the file paths that were updated; 1 with a list of new files
-- provide complete code for all files that were changed or newly added in plain text blocks for copy and paste as a backup in ase the
- download link fails to download the zip file
+- provide complete code for all files that were changed or newly added in plain text blocks for copy and paste as a backup in case the download link fails to download the zip file
 - provide clear instructions
 - cause no regressions
 - write a regression test to ensure this doesn't happen again
