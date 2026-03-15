@@ -184,7 +184,7 @@ services:
     entrypoint: ["/bin/sh", "-lc"]
     command: >
       MODEL_FILE_NAME="$$(basename "$$LLM_MODEL_PATH")";
-      MODEL_STATE_DIR_NAME="$${MODEL_FILE_NAME//./-}";
+      MODEL_STATE_DIR_NAME="$$(printf '%s' "$$MODEL_FILE_NAME" | tr '.' '-')";
       mkdir -p "/models/$${MODEL_STATE_DIR_NAME}/state";
       exec llama-server
       --host 0.0.0.0
@@ -211,7 +211,7 @@ services:
     entrypoint: ["/bin/sh", "-lc"]
     command: >
       MODEL_FILE_NAME="$$(basename "$$LLM_MODEL_PATH")";
-      MODEL_STATE_DIR_NAME="$${MODEL_FILE_NAME//./-}";
+      MODEL_STATE_DIR_NAME="$$(printf '%s' "$$MODEL_FILE_NAME" | tr '.' '-')";
       mkdir -p "/models/$${MODEL_STATE_DIR_NAME}/state";
       exec llama-server
       --host 0.0.0.0
