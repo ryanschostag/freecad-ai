@@ -25,4 +25,26 @@ time docker compose --profile cpu build --no-cache 2>&1 | tee "$build_file"
 sleep 1
 time docker compose --profile cpu up -d 2>&1 | tee "$up_file"
 
+wait_for_url() {
+  local url="$1"
+  local name="$2"
+  local timeout_s="${3:-120}"
+  local start_ts
+  start_ts="$(date +%s)"
+  while true; do
+    if curl -fsS "$url" >/dev/null 2>&1; then
+      echo "$name is ready: $url"
+      return 0
+    fi
+    if (( $(date +%s) - start_ts >= timeout_s )); then
+      echo "Timed out waiting for $name at $url" >&2
+      return 1
+    fi
+    sleep 2
+  done
+}
+
+wait_for_url "http://localhost:8000/v1/models" "llm" 180
+wait_for_url "http://localhost:8080/health" "api" 60
+
 echo Complete!

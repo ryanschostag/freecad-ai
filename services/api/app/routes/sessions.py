@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import datetime, timezone
 
@@ -46,11 +47,13 @@ def _load_run_repair_loop_job():
 
 
 
-async def ensure_llm_ready() -> None:
-    """Fail fast if the configured LLM is not reachable.
+async def ensure_llm_ready(max_wait_s: float = 30.0) -> None:
+    """Fail fast if the configured LLM is not reachable, with a short warm-up retry window.
 
-    The local llama.cpp server may or may not expose a dedicated /health endpoint
-    depending on build flags. We try a small set of common endpoints.
+    Session creation can succeed before llama.cpp has finished loading the model.
+    When the user immediately sends a prompt from the web UI, a single probe can
+    spuriously fail even though the service is seconds away from being ready.
+    Retry briefly so prompt submission can return a job id reliably after startup.
     """
     settings = Settings()
     base = (settings.llm_base_url or "").rstrip("/")
@@ -59,16 +62,28 @@ async def ensure_llm_ready() -> None:
 
     candidates = [f"{base}/health", f"{base}/v1/models", f"{base}/"]
     timeout = httpx.Timeout(2.0, connect=2.0)
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        for url in candidates:
-            try:
-                r = await client.get(url)
-                if 200 <= r.status_code < 300:
-                    return
-            except Exception:
-                continue
-    raise HTTPException(status_code=503, detail=f"LLM is not ready at {base}")
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + max(0.0, float(max_wait_s))
+    last_error: str | None = None
 
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        while True:
+            for url in candidates:
+                try:
+                    r = await client.get(url)
+                    if 200 <= r.status_code < 300:
+                        return
+                    last_error = f"{url} returned {r.status_code}"
+                except Exception as exc:
+                    last_error = f"{type(exc).__name__}: {exc}"
+            if loop.time() >= deadline:
+                break
+            await asyncio.sleep(1.0)
+
+    detail = f"LLM is not ready at {base}"
+    if last_error:
+        detail = f"{detail} ({last_error})"
+    raise HTTPException(status_code=503, detail=detail)
 
 def _get_session_or_404(db: Session, session_id: str) -> models.DimSession:
     s = db.query(models.DimSession).filter(models.DimSession.session_id == session_id).first()
@@ -180,6 +195,10 @@ async def send_message(session_id: str, payload: dict, db: Session = Depends(get
     max_repair_iterations = int(payload.get("max_repair_iterations") or 3)
     llm_max_tokens = int(payload.get("llm_max_tokens") or 1200)
 
+    # Gate job enqueue on LLM readiness so clients do not fail just because
+    # the model is still finishing its startup warm-up window.
+    await ensure_llm_ready()
+
     now = datetime.now(timezone.utc)
     time_id = upsert_time(db, now)
     user_message_id = str(uuid.uuid4())
@@ -202,9 +221,6 @@ async def send_message(session_id: str, payload: dict, db: Session = Depends(get
         )
     )
     db.commit()
-
-    # Gate job enqueue on LLM readiness so clients fail fast instead of hanging.
-    await ensure_llm_ready()
 
     settings = Settings()
     timeout_seconds = int(payload.get("timeout_seconds") or settings.default_job_timeout_seconds)

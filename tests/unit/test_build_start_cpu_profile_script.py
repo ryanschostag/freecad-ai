@@ -13,3 +13,6 @@ def test_cpu_profile_script_uses_cpu_down_and_checks_model_file_and_state_dir():
     assert 'docker compose --profile cpu down' in script
     assert 'docker compose --profile test down' not in script
     assert 'docker compose --profile cpu up -d' in script
+    assert 'wait_for_url() {' in script
+    assert 'http://localhost:8000/v1/models' in script
+    assert 'http://localhost:8080/health' in script
