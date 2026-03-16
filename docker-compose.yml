@@ -117,7 +117,7 @@ services:
       - "3000:3000"
     environment:
       - API_BASE_URL=http://api:8080
-      - WEBUI_API_TIMEOUT_S=60
+      - WEBUI_API_TIMEOUT_S=180
     depends_on:
       - api
 
@@ -128,7 +128,7 @@ services:
       - "3001:3000"
     environment:
       - API_BASE_URL=http://api-test:8080
-      - WEBUI_API_TIMEOUT_S=60
+      - WEBUI_API_TIMEOUT_S=180
     depends_on:
       - api-test
 

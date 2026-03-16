@@ -2,6 +2,10 @@ let pollTimer = null;
 
 function $(id) { return document.getElementById(id); }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function setOutput(obj) {
   $("output").textContent = typeof obj === "string" ? obj : JSON.stringify(obj, null, 2);
 }
@@ -121,6 +125,33 @@ async function fetchArtifacts() {
   });
 }
 
+async function sendPromptRequestWithRetry(sessionId, payload, maxAttempts = 6) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await apiFetch(`v1/sessions/${sessionId}/messages`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+    } catch (error) {
+      lastError = error;
+      const message = String(error && error.message ? error.message : error);
+      const transient = message.includes("HTTP 502") || message.includes("HTTP 503") || message.includes("HTTP 504") || message.includes("LLM is not ready") || message.includes("timed out") || message.includes("NetworkError") || message.includes("Failed to fetch");
+      if (!transient || attempt === maxAttempts) {
+        throw error;
+      }
+      setJobOutput({
+        status: "retrying",
+        attempt,
+        max_attempts: maxAttempts,
+        reason: message,
+      });
+      await sleep(2000);
+    }
+  }
+  throw lastError || new Error("Prompt submission failed.");
+}
+
 async function sendPrompt() {
   const sid = $("sessionId").value.trim();
   if (!sid) throw new Error("Create or provide a session id first.");
@@ -143,16 +174,13 @@ async function sendPrompt() {
     llm_max_tokens: parseInt($("llmMaxTokens").value || "1200", 10),
   };
 
-  const data = await apiFetch(`v1/sessions/${sid}/messages`, {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
+  setJobOutput({ status: "submitting" });
+  const data = await sendPromptRequestWithRetry(sid, payload);
 
   $("jobId").value = data.job_id;
   setJobOutput({ enqueued: data });
   setOutput({ message_sent: data });
 
-  // auto start polling
   await trackJob(true);
 }
 
