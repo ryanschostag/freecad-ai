@@ -11,6 +11,7 @@ services:
       - ARTIFACT_STAGING_DIR=/artifacts_staging
       - RAG_SOURCES_CONFIG=/config/rag_sources.yaml
       - LLM_BASE_URL=http://llm:8000
+      - LLM_READY_TIMEOUT_SECONDS=${LLM_READY_TIMEOUT_SECONDS:-300}
       - API_BASE_URL=http://api:8080
       - REDIS_URL=redis://redis:6379/0
 
@@ -117,7 +118,7 @@ services:
       - "3000:3000"
     environment:
       - API_BASE_URL=http://api:8080
-      - WEBUI_API_TIMEOUT_S=180
+      - WEBUI_API_TIMEOUT_S=${WEBUI_API_TIMEOUT_S:-360}
     depends_on:
       - api
 
@@ -128,7 +129,7 @@ services:
       - "3001:3000"
     environment:
       - API_BASE_URL=http://api-test:8080
-      - WEBUI_API_TIMEOUT_S=180
+      - WEBUI_API_TIMEOUT_S=${WEBUI_API_TIMEOUT_S:-360}
     depends_on:
       - api-test
 
@@ -258,6 +259,7 @@ services:
       - DATABASE_URL=postgresql+psycopg://cad:cad@db:5432/cad
       - REDIS_URL=redis://redis:6379/0
       - LLM_BASE_URL=http://llm:8000
+      - LLM_READY_TIMEOUT_SECONDS=${LLM_READY_TIMEOUT_SECONDS:-300}
       - API_BASE_URL=http://api:8080
       # Model execution metadata (persisted into dim_model for metrics)
       - MODEL_ID=cpu-default

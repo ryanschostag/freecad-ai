@@ -20,8 +20,9 @@ class Settings(BaseSettings):
     default_job_timeout_seconds: int = 900
     job_timeout_buffer_seconds: int = 60
 
-    # LLM health check timeout (seconds)
+    # LLM readiness/health timeouts (seconds)
     llm_health_timeout_seconds: float = 2.0
+    llm_ready_timeout_seconds: float = 300.0
     redis_url: str = "redis://redis:6379/0"
     storage_mode: str = "minio"
     s3_endpoint: str = "http://minio:9000"

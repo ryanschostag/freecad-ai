@@ -33,6 +33,8 @@ def _load_sessions_module():
 
     class _Settings:
         llm_base_url = "http://llm:8000"
+        llm_health_timeout_seconds = 2.0
+        llm_ready_timeout_seconds = 300.0
         default_job_timeout_seconds = 300
         job_timeout_buffer_seconds = 30
         inline_jobs = False
@@ -60,8 +62,9 @@ def _load_sessions_module():
 
 
 class _Resp:
-    def __init__(self, status_code: int):
+    def __init__(self, status_code: int, text: str = ""):
         self.status_code = status_code
+        self.text = text
 
 
 class _ClientFactory:
@@ -84,7 +87,7 @@ class _ClientFactory:
                 item = outer.outcomes.pop(0)
                 if isinstance(item, Exception):
                     raise item
-                return _Resp(item)
+                return item if isinstance(item, _Resp) else _Resp(item)
 
         return _Client()
 
@@ -95,6 +98,8 @@ async def test_ensure_llm_ready_retries_until_success(monkeypatch):
 
     class _Settings:
         llm_base_url = "http://llm:8000"
+        llm_health_timeout_seconds = 2.0
+        llm_ready_timeout_seconds = 300.0
 
     monkeypatch.setattr(sessions, "Settings", lambda: _Settings())
     factory = _ClientFactory([
@@ -126,11 +131,90 @@ async def test_ensure_llm_ready_retries_until_success(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_ensure_llm_ready_honors_configured_timeout_when_argument_omitted(monkeypatch):
+    sessions = _load_sessions_module()
+
+    class _Settings:
+        llm_base_url = "http://llm:8000"
+        llm_health_timeout_seconds = 2.0
+        llm_ready_timeout_seconds = 123.0
+
+    monkeypatch.setattr(sessions, "Settings", lambda: _Settings())
+    factory = _ClientFactory([_Resp(200)])
+    monkeypatch.setattr(sessions.httpx, "AsyncClient", factory)
+
+    class _Loop:
+        def __init__(self):
+            self.current = 0.0
+
+        def time(self):
+            self.current += 1.0
+            return self.current
+
+    async def fake_sleep(seconds):
+        return None
+
+    monkeypatch.setattr(sessions.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(sessions.asyncio, "get_running_loop", lambda: _Loop())
+
+    await sessions.ensure_llm_ready()
+
+    assert factory.calls == ["http://llm:8000/health"]
+
+
+@pytest.mark.anyio
+async def test_ensure_llm_ready_treats_loading_503_as_retryable(monkeypatch):
+    sessions = _load_sessions_module()
+
+    class _Settings:
+        llm_base_url = "http://llm:8000"
+        llm_health_timeout_seconds = 2.0
+        llm_ready_timeout_seconds = 300.0
+
+    monkeypatch.setattr(sessions, "Settings", lambda: _Settings())
+    factory = _ClientFactory([
+        _Resp(503, "loading model weights"),
+        Exception("connection warming up"),
+        Exception("connection warming up"),
+        _Resp(200),
+    ])
+    monkeypatch.setattr(sessions.httpx, "AsyncClient", factory)
+
+    sleep_calls = []
+
+    async def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+
+    class _Loop:
+        def __init__(self):
+            self.current = 0.0
+
+        def time(self):
+            self.current += 1.0
+            return self.current
+
+    monkeypatch.setattr(sessions.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(sessions.asyncio, "get_running_loop", lambda: _Loop())
+
+    await sessions.ensure_llm_ready(max_wait_s=5.0)
+
+    assert sleep_calls == [1.0]
+    assert factory.calls[:3] == [
+        "http://llm:8000/health",
+        "http://llm:8000/v1/models",
+        "http://llm:8000/",
+    ]
+    assert factory.calls[-1] == "http://llm:8000/health"
+
+
+@pytest.mark.anyio
 async def test_ensure_llm_ready_raises_after_retry_window(monkeypatch):
     sessions = _load_sessions_module()
 
     class _Settings:
         llm_base_url = "http://llm:8000"
+        llm_health_timeout_seconds = 2.0
+        llm_ready_timeout_seconds = 300.0
 
     monkeypatch.setattr(sessions, "Settings", lambda: _Settings())
     factory = _ClientFactory([
@@ -157,4 +241,4 @@ async def test_ensure_llm_ready_raises_after_retry_window(monkeypatch):
         await sessions.ensure_llm_ready(max_wait_s=5.0)
 
     assert excinfo.value.status_code == 503
-    assert "LLM is not ready at http://llm:8000" in excinfo.value.detail
+    assert "LLM is not ready at http://llm:8000 after waiting 5s" in excinfo.value.detail

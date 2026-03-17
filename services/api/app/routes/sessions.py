@@ -18,6 +18,17 @@ from app.utils import upsert_time
 router = APIRouter()
 
 
+LLM_LOADING_HINTS = (
+    "loading model",
+    "model is loading",
+    "model loading",
+    "loading",
+    "initializing",
+    "warm",
+    "slot",
+)
+
+
 def _load_run_repair_loop_job():
     """Import the worker job entrypoint for inline test execution.
 
@@ -46,24 +57,40 @@ def _load_run_repair_loop_job():
         return run_repair_loop_job
 
 
+def _response_text(response: object) -> str:
+    text = getattr(response, "text", None)
+    if isinstance(text, str):
+        return text
+    content = getattr(response, "content", None)
+    if isinstance(content, bytes):
+        return content.decode("utf-8", errors="ignore")
+    if isinstance(content, str):
+        return content
+    return ""
 
-async def ensure_llm_ready(max_wait_s: float = 30.0) -> None:
-    """Fail fast if the configured LLM is not reachable, with a short warm-up retry window.
+
+async def ensure_llm_ready(max_wait_s: float | None = None) -> None:
+    """Fail fast if the configured LLM is not reachable, with a warm-up retry window.
 
     Session creation can succeed before llama.cpp has finished loading the model.
-    When the user immediately sends a prompt from the web UI, a single probe can
-    spuriously fail even though the service is seconds away from being ready.
-    Retry briefly so prompt submission can return a job id reliably after startup.
+    When the user immediately sends a prompt from the web UI, a short fixed probe
+    spuriously fails even though the service is still loading. Retry for a longer,
+    configurable warm-up window so prompt submission can return a job id reliably
+    after startup on CPU hosts.
     """
     settings = Settings()
     base = (settings.llm_base_url or "").rstrip("/")
     if not base:
         raise HTTPException(status_code=503, detail="LLM_BASE_URL is not configured")
 
+    effective_wait_s = float(
+        max_wait_s if max_wait_s is not None else getattr(settings, "llm_ready_timeout_seconds", 300.0)
+    )
     candidates = [f"{base}/health", f"{base}/v1/models", f"{base}/"]
-    timeout = httpx.Timeout(2.0, connect=2.0)
+    single_probe_timeout = max(2.0, float(getattr(settings, "llm_health_timeout_seconds", 2.0)))
+    timeout = httpx.Timeout(single_probe_timeout, connect=min(single_probe_timeout, 5.0))
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + max(0.0, float(max_wait_s))
+    deadline = loop.time() + max(0.0, effective_wait_s)
     last_error: str | None = None
 
     async with httpx.AsyncClient(timeout=timeout) as client:
@@ -71,19 +98,27 @@ async def ensure_llm_ready(max_wait_s: float = 30.0) -> None:
             for url in candidates:
                 try:
                     r = await client.get(url)
+                    body = _response_text(r).lower()
                     if 200 <= r.status_code < 300:
                         return
-                    last_error = f"{url} returned {r.status_code}"
+                    if r.status_code in {408, 425, 429, 500, 502, 503, 504}:
+                        if any(hint in body for hint in LLM_LOADING_HINTS):
+                            last_error = f"{url} still warming up ({r.status_code})"
+                        else:
+                            last_error = f"{url} returned {r.status_code}"
+                    else:
+                        last_error = f"{url} returned {r.status_code}"
                 except Exception as exc:
                     last_error = f"{type(exc).__name__}: {exc}"
             if loop.time() >= deadline:
                 break
             await asyncio.sleep(1.0)
 
-    detail = f"LLM is not ready at {base}"
+    detail = f"LLM is not ready at {base} after waiting {effective_wait_s:.0f}s"
     if last_error:
         detail = f"{detail} ({last_error})"
     raise HTTPException(status_code=503, detail=detail)
+
 
 def _get_session_or_404(db: Session, session_id: str) -> models.DimSession:
     s = db.query(models.DimSession).filter(models.DimSession.session_id == session_id).first()
@@ -262,60 +297,44 @@ async def send_message(session_id: str, payload: dict, db: Session = Depends(get
                 units=units,
                 tolerance_mm=tolerance_mm,
                 max_repair_iterations=max_repair_iterations,
-                timeout_seconds=timeout_seconds,
                 llm_max_tokens=llm_max_tokens,
+                timeout_seconds=timeout_seconds,
             )
-            finished_at = datetime.now(timezone.utc)
-            job_run = db.query(models.JobRun).filter(models.JobRun.job_id == job_id).one()
-            job_run.status = "finished"
-            job_run.finished_at = finished_at
-            job_run.result_json = result
-            job_run.error_json = {}
-            db.commit()
         except Exception as exc:
             finished_at = datetime.now(timezone.utc)
             job_run = db.query(models.JobRun).filter(models.JobRun.job_id == job_id).one()
             job_run.status = "failed"
             job_run.finished_at = finished_at
-            job_run.result_json = {}
-            job_run.error_json = {"exc_info": f"{type(exc).__name__}: {exc}"}
-            db.add(models.LogEvent(session_id=session_id, type="job.failed", payload_json={"job_id": job_id, "error": job_run.error_json}))
+            job_run.error_json = {"detail": str(exc)}
+            db.add(models.LogEvent(session_id=session_id, type="job.failed", payload_json={"job_id": job_id, "detail": str(exc)}))
+            db.commit()
+            raise
+        else:
+            finished_at = datetime.now(timezone.utc)
+            job_run = db.query(models.JobRun).filter(models.JobRun.job_id == job_id).one()
+            job_run.status = result.get("status", "finished")
+            job_run.finished_at = finished_at
+            job_run.result_json = result
+            db.add(models.LogEvent(session_id=session_id, type="job.finished", payload_json={"job_id": job_id}))
             db.commit()
     else:
-        q = get_queue("freecad")
-
-        # IMPORTANT:
-        # Do NOT enqueue a callable here. In our current container mix, rq serializes the
-        # callable into a colon-form reference (e.g. "worker:jobs.run_repair_loop_job"),
-        # and the worker's rq import resolver (import_attribute) cannot resolve that form.
-        # Enqueue a dotted string path instead, which the worker can import consistently.
-        job = q.enqueue_call(
-            func="worker.jobs.run_repair_loop_job",
-            kwargs={
-                "job_id": job_id,
-                "session_id": session_id,
-                "user_message_id": user_message_id,
-                "prompt": content,
-                "mode": mode,
-                "export": export,
-                "units": units,
-                "tolerance_mm": tolerance_mm,
-                "max_repair_iterations": max_repair_iterations,
-                "timeout_seconds": timeout_seconds,
-                "llm_max_tokens": llm_max_tokens,
-            },
+        q = get_queue()
+        q.enqueue(
+            "worker.jobs.run_repair_loop_job",
             job_id=job_id,
-            timeout=rq_timeout_seconds,
-            result_ttl=3600,
-            failure_ttl=3600,
+            session_id=session_id,
+            user_message_id=user_message_id,
+            prompt=content,
+            mode=mode,
+            export=export,
+            units=units,
+            tolerance_mm=tolerance_mm,
+            max_repair_iterations=max_repair_iterations,
+            llm_max_tokens=llm_max_tokens,
+            timeout_seconds=timeout_seconds,
+            job_timeout=rq_timeout_seconds,
+            result_ttl=86400,
+            failure_ttl=86400,
         )
-        job.meta["session_id"] = session_id
-        job.meta["user_message_id"] = user_message_id
-        job.save_meta()
 
-    return {
-        "job_id": job_id,
-        "session_id": session_id,
-        "user_message_id": user_message_id,
-        "macro_artifact_id": None,
-    }
+    return {"job_id": job_id, "session_id": session_id, "status": "queued"}

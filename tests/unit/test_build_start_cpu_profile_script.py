@@ -14,5 +14,10 @@ def test_cpu_profile_script_uses_cpu_down_and_checks_model_file_and_state_dir():
     assert 'docker compose --profile test down' not in script
     assert 'docker compose --profile cpu up -d' in script
     assert 'wait_for_url() {' in script
+    assert 'wait_for_llm() {' in script
+    assert 'llm_ready_timeout_s="${LLM_READY_TIMEOUT_S:-600}"' in script
+    assert 'api_ready_timeout_s="${API_READY_TIMEOUT_S:-90}"' in script
     assert 'http://localhost:8000/v1/models' in script
+    assert 'http://localhost:8000/health' in script
+    assert 'print_service_logs llm' in script
     assert 'http://localhost:8080/health' in script
