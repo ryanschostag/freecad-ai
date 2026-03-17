@@ -36,7 +36,7 @@ async def proxy_api(path: str, request: Request) -> Response:
     headers: Dict[str, str] = {k: v for k, v in request.headers.items() if k.lower() != "host"}
 
     body = await request.body()
-    timeout_s = float(os.getenv("WEBUI_API_TIMEOUT_S", "180"))
+    timeout_s = float(os.getenv("WEBUI_API_TIMEOUT_S", "900"))
     timeout = httpx.Timeout(timeout_s)
 
     async with httpx.AsyncClient(timeout=timeout) as client:

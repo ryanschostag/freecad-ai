@@ -4,9 +4,10 @@ from pathlib import Path
 
 
 class _FakeResponse:
-    def __init__(self, payload, status_code=200):
+    def __init__(self, payload, status_code=200, text: str | None = None):
         self._payload = payload
         self.status_code = status_code
+        self.text = text if text is not None else (payload if isinstance(payload, str) else "")
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -52,6 +53,7 @@ def test_chat_extracts_text_from_content_parts(monkeypatch):
     llm = _load_llm_module()
 
     fake = _FakeClient([
+        _FakeResponse({"content": "READY"}),
         _FakeResponse(
             {
                 "choices": [
@@ -74,13 +76,15 @@ def test_chat_extracts_text_from_content_parts(monkeypatch):
 
     assert "```" not in out
     assert "import FreeCAD as App" in out
-    assert fake.calls[0][0].endswith("/v1/chat/completions")
+    assert fake.calls[0][0].endswith("/completion")
+    assert fake.calls[1][0].endswith("/v1/chat/completions")
 
 
 def test_chat_falls_back_to_completion_when_chat_payload_has_no_extractable_text(monkeypatch):
     llm = _load_llm_module()
 
     fake = _FakeClient([
+        _FakeResponse({"content": "READY"}),
         _FakeResponse({"choices": [{"message": {"content": [{"type": "image", "image_url": "x"}]}}]}),
         _FakeResponse({"content": "import FreeCAD as App\nApp.newDocument('Model')\n"}),
     ])
@@ -89,13 +93,14 @@ def test_chat_falls_back_to_completion_when_chat_payload_has_no_extractable_text
     out = llm.chat([{"role": "user", "content": "make a box"}])
 
     assert "App.newDocument('Model')" in out
-    assert fake.calls[1][0].endswith("/completion")
+    assert fake.calls[2][0].endswith("/completion")
 
 
 def test_chat_sanitizes_markdown_fence_stop_sequence(monkeypatch):
     llm = _load_llm_module()
 
     fake = _FakeClient([
+        _FakeResponse({"content": "READY"}),
         _FakeResponse({
             "choices": [
                 {
@@ -113,6 +118,27 @@ def test_chat_sanitizes_markdown_fence_stop_sequence(monkeypatch):
         stop=["<|im_end|>", "</s>", "```"],
     )
 
-    payload = fake.calls[0][1]
+    payload = fake.calls[1][1]
     assert payload["stop"] == ["<|im_end|>", "</s>"]
     assert out == "import FreeCAD as App\nApp.newDocument('Model')"
+
+
+def test_chat_waits_for_inference_warmup_before_chat_completion(monkeypatch):
+    llm = _load_llm_module()
+
+    fake = _FakeClient([
+        _FakeResponse({"error": "loading model"}, status_code=503, text="loading model"),
+        _FakeResponse({"content": "READY"}),
+        _FakeResponse({"choices": [{"message": {"content": "ok"}}]}),
+    ])
+    monkeypatch.setattr(llm.httpx, "Client", lambda timeout=None: fake)
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(llm.time, "sleep", lambda seconds: sleep_calls.append(seconds))
+
+    out = llm.chat([{"role": "user", "content": "hello"}], timeout_s=10, max_attempts=1)
+
+    assert out == "ok"
+    assert sleep_calls == [1.0]
+    assert fake.calls[0][0].endswith("/completion")
+    assert fake.calls[1][0].endswith("/completion")
+    assert fake.calls[2][0].endswith("/v1/chat/completions")

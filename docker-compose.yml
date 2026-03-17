@@ -118,7 +118,7 @@ services:
       - "3000:3000"
     environment:
       - API_BASE_URL=http://api:8080
-      - WEBUI_API_TIMEOUT_S=${WEBUI_API_TIMEOUT_S:-360}
+      - WEBUI_API_TIMEOUT_S=${WEBUI_API_TIMEOUT_S:-900}
     depends_on:
       - api
 
@@ -129,7 +129,7 @@ services:
       - "3001:3000"
     environment:
       - API_BASE_URL=http://api-test:8080
-      - WEBUI_API_TIMEOUT_S=${WEBUI_API_TIMEOUT_S:-360}
+      - WEBUI_API_TIMEOUT_S=${WEBUI_API_TIMEOUT_S:-900}
     depends_on:
       - api-test
 
@@ -252,7 +252,8 @@ services:
     profiles: ["cpu", "gpu"]
     build: ./services/freecad-worker
     environment:
-      - LLM_HTTP_TIMEOUT_S=900
+      - LLM_HTTP_TIMEOUT_S=1200
+      - LLM_INFERENCE_READY_TIMEOUT_S=1200
       - LLM_HTTP_CONNECT_TIMEOUT_S=30
       - LLM_HTTP_MAX_ATTEMPTS=5
       - LLM_HTTP_RETRY_BACKOFF_S=1.0

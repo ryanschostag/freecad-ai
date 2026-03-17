@@ -20,5 +20,5 @@ def test_web_ui_retries_transient_prompt_submission_failures_and_uses_longer_pro
     assert 'message.includes("HTTP 503")' in app_js
     assert 'message.includes("HTTP 504")' in app_js
     assert 'message.includes("timed out")' in app_js
-    assert 'timeout_s = float(os.getenv("WEBUI_API_TIMEOUT_S", "180"))' in main_py
-    assert 'WEBUI_API_TIMEOUT_S=${WEBUI_API_TIMEOUT_S:-360}' in compose
+    assert 'timeout_s = float(os.getenv("WEBUI_API_TIMEOUT_S", "900"))' in main_py
+    assert 'WEBUI_API_TIMEOUT_S=${WEBUI_API_TIMEOUT_S:-900}' in compose

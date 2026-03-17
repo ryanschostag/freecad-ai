@@ -230,9 +230,10 @@ async def send_message(session_id: str, payload: dict, db: Session = Depends(get
     max_repair_iterations = int(payload.get("max_repair_iterations") or 3)
     llm_max_tokens = int(payload.get("llm_max_tokens") or 1200)
 
-    # Gate job enqueue on LLM readiness so clients do not fail just because
-    # the model is still finishing its startup warm-up window.
-    await ensure_llm_ready()
+    # Do not block job-id creation on LLM warm-up. Slow CPU hosts can take a long
+    # time to become inference-ready even after the HTTP server responds. Queue the
+    # job immediately so the UI always receives a job id, and let the worker wait
+    # for true inference readiness before calling the model.
 
     now = datetime.now(timezone.utc)
     time_id = upsert_time(db, now)

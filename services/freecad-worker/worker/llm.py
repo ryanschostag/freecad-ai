@@ -11,6 +11,17 @@ import httpx
 from worker.settings import settings
 
 
+LLM_LOADING_HINTS = (
+    "loading model",
+    "model is loading",
+    "model loading",
+    "loading",
+    "initializing",
+    "warm",
+    "slot",
+)
+
+
 def _env_float(name: str, default: float) -> float:
     v = os.getenv(name)
     if v is None or v == "":
@@ -132,6 +143,65 @@ def _sanitize_stop_sequences(stop: list[str] | None) -> list[str] | None:
     return sanitized or None
 
 
+def _response_body_text(response: object) -> str:
+    text = getattr(response, "text", None)
+    if isinstance(text, str):
+        return text
+    content = getattr(response, "content", None)
+    if isinstance(content, bytes):
+        return content.decode("utf-8", errors="ignore")
+    if isinstance(content, str):
+        return content
+    return ""
+
+
+def _is_loading_response(response: object) -> bool:
+    status_code = int(getattr(response, "status_code", 0) or 0)
+    if status_code not in {408, 425, 429, 500, 502, 503, 504}:
+        return False
+    body = _response_body_text(response).lower()
+    return any(hint in body for hint in LLM_LOADING_HINTS) or status_code in {502, 503, 504}
+
+
+def _wait_for_inference_ready(
+    client: httpx.Client,
+    base_url: str,
+    *,
+    request_timeout_s: float,
+    max_wait_s: float,
+) -> None:
+    """Wait until the LLM can answer a tiny inference request, not just /health."""
+    deadline = time.monotonic() + max(0.0, max_wait_s)
+    prompt = "<|im_start|>user\nRespond with READY only.\n<|im_end|>\n<|im_start|>assistant\n"
+    completion_payload = {
+        "prompt": prompt,
+        "n_predict": 1,
+        "temperature": 0,
+        "stop": ["<|im_end|>", "</s>", "<|endoftext|>"],
+    }
+    last_error = "LLM inference warm-up probe did not complete"
+
+    while True:
+        try:
+            response = client.post(f"{base_url}/completion", json=completion_payload)
+            if 200 <= response.status_code < 300:
+                return
+            if _is_loading_response(response):
+                last_error = f"warming up ({response.status_code})"
+            else:
+                last_error = f"unexpected status {response.status_code}: {_response_body_text(response)[:200]}"
+        except (httpx.ReadTimeout, httpx.ConnectTimeout) as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+
+        if time.monotonic() >= deadline:
+            raise TimeoutError(
+                f"LLM inference readiness timed out after {max_wait_s:.0f}s at {base_url}/completion ({last_error})"
+            )
+        time.sleep(min(2.0, max(0.25, request_timeout_s / 10.0)))
+
+
 def chat(
     messages: list[dict[str, str]],
     temperature: float = 0.1,
@@ -154,6 +224,7 @@ def chat(
     - LLM_HTTP_CONNECT_TIMEOUT_S: connect timeout (seconds)
     - LLM_HTTP_MAX_ATTEMPTS: retry count for transient timeouts
     - LLM_HTTP_RETRY_BACKOFF_S: base backoff (seconds), multiplied by attempt number
+    - LLM_INFERENCE_READY_TIMEOUT_S: how long to wait for a tiny /completion warm-up probe
     """
     url = settings.llm_base_url.rstrip("/")
     endpoint = url + "/v1/chat/completions"
@@ -176,6 +247,10 @@ def chat(
         else _env_float("LLM_HTTP_TIMEOUT_S", req_timeout_default)
     )
     connect_timeout = _env_float("LLM_HTTP_CONNECT_TIMEOUT_S", connect_timeout_default)
+    inference_ready_timeout = _env_float(
+        "LLM_INFERENCE_READY_TIMEOUT_S",
+        max(req_timeout, float(_env_int("LLM_READY_TIMEOUT_S", int(req_timeout_default))))
+    )
 
     attempts = max(1, int(max_attempts)) if max_attempts is not None else max(1, _env_int("LLM_HTTP_MAX_ATTEMPTS", 2))
     backoff_s = _env_float("LLM_HTTP_RETRY_BACKOFF_S", 1.0)
@@ -186,6 +261,12 @@ def chat(
     for attempt in range(1, attempts + 1):
         try:
             with httpx.Client(timeout=client_timeout) as client:
+                _wait_for_inference_ready(
+                    client,
+                    url,
+                    request_timeout_s=req_timeout,
+                    max_wait_s=inference_ready_timeout,
+                )
                 r = client.post(endpoint, json=payload)
                 r.raise_for_status()
                 data = r.json()
@@ -193,9 +274,6 @@ def chat(
                 if text.strip():
                     return text
 
-                # llama.cpp can still produce a valid completion while returning a non-string
-                # or otherwise unusual OpenAI-compatible payload shape. Fall back to the native
-                # /completion endpoint before declaring the response empty.
                 completion_payload = {
                     "prompt": _messages_to_prompt(messages),
                     "n_predict": max_tokens,
@@ -213,6 +291,16 @@ def chat(
                     "LLM response contained no extractable text. "
                     f"chat_response={_response_preview(data)} completion_response={_response_preview(data2)}"
                 )
+        except TimeoutError as e:
+            last_exc = e
+            if attempt >= attempts:
+                raise
+            time.sleep(backoff_s * attempt)
+        except httpx.HTTPStatusError as e:
+            last_exc = e
+            if not _is_loading_response(e.response) or attempt >= attempts:
+                raise
+            time.sleep(backoff_s * attempt)
         except (httpx.ReadTimeout, httpx.ConnectTimeout) as e:
             last_exc = e
             if attempt >= attempts:
