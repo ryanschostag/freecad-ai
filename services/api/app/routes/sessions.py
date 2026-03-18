@@ -320,20 +320,23 @@ async def send_message(session_id: str, payload: dict, db: Session = Depends(get
             db.commit()
     else:
         q = get_queue()
-        q.enqueue(
-            "worker.jobs.run_repair_loop_job",
+        q.enqueue_call(
+            func="worker.jobs.run_repair_loop_job",
+            kwargs={
+                "job_id": job_id,
+                "session_id": session_id,
+                "user_message_id": user_message_id,
+                "prompt": content,
+                "mode": mode,
+                "export": export,
+                "units": units,
+                "tolerance_mm": tolerance_mm,
+                "max_repair_iterations": max_repair_iterations,
+                "llm_max_tokens": llm_max_tokens,
+                "timeout_seconds": timeout_seconds,
+            },
             job_id=job_id,
-            session_id=session_id,
-            user_message_id=user_message_id,
-            prompt=content,
-            mode=mode,
-            export=export,
-            units=units,
-            tolerance_mm=tolerance_mm,
-            max_repair_iterations=max_repair_iterations,
-            llm_max_tokens=llm_max_tokens,
-            timeout_seconds=timeout_seconds,
-            job_timeout=rq_timeout_seconds,
+            timeout=rq_timeout_seconds,
             result_ttl=86400,
             failure_ttl=86400,
         )
