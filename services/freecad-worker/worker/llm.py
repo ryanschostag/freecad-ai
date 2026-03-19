@@ -143,6 +143,29 @@ def _sanitize_stop_sequences(stop: list[str] | None) -> list[str] | None:
     return sanitized or None
 
 
+def _candidate_base_urls(base_url: str) -> list[str]:
+    candidates: list[str] = []
+
+    def add(url: str) -> None:
+        normalized = str(url or '').strip().rstrip('/')
+        if normalized and normalized not in candidates:
+            candidates.append(normalized)
+
+    add(base_url)
+    add(os.getenv("LLM_BASE_URL", ""))
+
+    host_swaps = {
+        "http://llm:8000": "http://freecad-ai-llm:8000",
+        "http://freecad-ai-llm:8000": "http://llm:8000",
+        "http://llm-cuda:8000": "http://llm-gpu:8000",
+        "http://llm-gpu:8000": "http://llm-cuda:8000",
+    }
+    for current in list(candidates):
+        add(host_swaps.get(current, ""))
+
+    return candidates
+
+
 def _response_body_text(response: object) -> str:
     text = getattr(response, "text", None)
     if isinstance(text, str):
@@ -226,8 +249,7 @@ def chat(
     - LLM_HTTP_RETRY_BACKOFF_S: base backoff (seconds), multiplied by attempt number
     - LLM_INFERENCE_READY_TIMEOUT_S: how long to wait for a tiny /completion warm-up probe
     """
-    url = settings.llm_base_url.rstrip("/")
-    endpoint = url + "/v1/chat/completions"
+    configured_url = settings.llm_base_url.rstrip("/")
     payload = {
         "model": settings.llm_model or "local-model",
         "messages": messages,
@@ -258,59 +280,59 @@ def chat(
     client_timeout = httpx.Timeout(req_timeout, connect=connect_timeout)
 
     last_exc: Exception | None = None
+    base_urls = _candidate_base_urls(configured_url)
     for attempt in range(1, attempts + 1):
-        try:
-            with httpx.Client(timeout=client_timeout) as client:
-                _wait_for_inference_ready(
-                    client,
-                    url,
-                    request_timeout_s=req_timeout,
-                    max_wait_s=inference_ready_timeout,
-                )
-                r = client.post(endpoint, json=payload)
-                r.raise_for_status()
-                data = r.json()
-                text = _extract_chat_text(data)
-                if text.strip():
-                    return text
+        for url in base_urls:
+            endpoint = url + "/v1/chat/completions"
+            try:
+                with httpx.Client(timeout=client_timeout) as client:
+                    _wait_for_inference_ready(
+                        client,
+                        url,
+                        request_timeout_s=req_timeout,
+                        max_wait_s=inference_ready_timeout,
+                    )
+                    r = client.post(endpoint, json=payload)
+                    r.raise_for_status()
+                    data = r.json()
+                    text = _extract_chat_text(data)
+                    if text.strip():
+                        return text
 
-                completion_payload = {
-                    "prompt": _messages_to_prompt(messages),
-                    "n_predict": max_tokens,
-                    "temperature": temperature,
-                    "stop": sanitized_stop or ["<|im_end|>", "</s>", "<|endoftext|>"],
-                }
-                r2 = client.post(url + "/completion", json=completion_payload)
-                r2.raise_for_status()
-                data2 = r2.json()
-                text2 = _normalize_generated_text(_extract_text(data2.get("content") or data2.get("text") or data2))
-                if text2.strip():
-                    return text2
+                    completion_payload = {
+                        "prompt": _messages_to_prompt(messages),
+                        "n_predict": max_tokens,
+                        "temperature": temperature,
+                        "stop": sanitized_stop or ["<|im_end|>", "</s>", "<|endoftext|>"],
+                    }
+                    r2 = client.post(url + "/completion", json=completion_payload)
+                    r2.raise_for_status()
+                    data2 = r2.json()
+                    text2 = _normalize_generated_text(_extract_text(data2.get("content") or data2.get("text") or data2))
+                    if text2.strip():
+                        return text2
 
-                raise RuntimeError(
-                    "LLM response contained no extractable text. "
-                    f"chat_response={_response_preview(data)} completion_response={_response_preview(data2)}"
-                )
-        except TimeoutError as e:
-            last_exc = e
-            if attempt >= attempts:
-                raise
-            time.sleep(backoff_s * attempt)
-        except httpx.HTTPStatusError as e:
-            last_exc = e
-            if not _is_loading_response(e.response) or attempt >= attempts:
-                raise
-            time.sleep(backoff_s * attempt)
-        except (httpx.ReadTimeout, httpx.ConnectTimeout) as e:
-            last_exc = e
-            if attempt >= attempts:
-                raise
-            time.sleep(backoff_s * attempt)
-        except Exception as e:
-            last_exc = e
-            if attempt >= attempts:
-                raise
-            time.sleep(backoff_s * attempt)
+                    raise RuntimeError(
+                        "LLM response contained no extractable text. "
+                        f"chat_response={_response_preview(data)} completion_response={_response_preview(data2)}"
+                    )
+            except TimeoutError as e:
+                last_exc = e
+                continue
+            except httpx.HTTPStatusError as e:
+                last_exc = e
+                if not _is_loading_response(e.response):
+                    break
+                continue
+            except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.ConnectError) as e:
+                last_exc = e
+                continue
+            except Exception as e:
+                last_exc = e
+                continue
+        if attempt >= attempts:
+            break
+        time.sleep(backoff_s * attempt)
 
     assert last_exc is not None
     raise last_exc

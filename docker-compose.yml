@@ -10,7 +10,7 @@ services:
       - DATABASE_URL=postgresql+psycopg://cad:cad@db:5432/cad
       - ARTIFACT_STAGING_DIR=/artifacts_staging
       - RAG_SOURCES_CONFIG=/config/rag_sources.yaml
-      - LLM_BASE_URL=http://llm:8000
+      - LLM_BASE_URL=http://freecad-ai-llm:8000
       - LLM_READY_TIMEOUT_SECONDS=${LLM_READY_TIMEOUT_SECONDS:-300}
       - API_BASE_URL=http://api:8080
       - REDIS_URL=redis://redis:6379/0
@@ -259,7 +259,7 @@ services:
       - LLM_HTTP_RETRY_BACKOFF_S=1.0
       - DATABASE_URL=postgresql+psycopg://cad:cad@db:5432/cad
       - REDIS_URL=redis://redis:6379/0
-      - LLM_BASE_URL=http://llm:8000
+      - LLM_BASE_URL=http://freecad-ai-llm:8000
       - LLM_READY_TIMEOUT_SECONDS=${LLM_READY_TIMEOUT_SECONDS:-300}
       - API_BASE_URL=http://api:8080
       # Model execution metadata (persisted into dim_model for metrics)
@@ -283,6 +283,7 @@ services:
       - redis
       - minio
       - minio-init
+      - llm
 
   freecad-worker-test:
     profiles: ["test"]

@@ -142,3 +142,41 @@ def test_chat_waits_for_inference_warmup_before_chat_completion(monkeypatch):
     assert fake.calls[0][0].endswith("/completion")
     assert fake.calls[1][0].endswith("/completion")
     assert fake.calls[2][0].endswith("/v1/chat/completions")
+
+
+def test_candidate_base_urls_include_fallback_container_aliases():
+    llm = _load_llm_module()
+
+    assert llm._candidate_base_urls("http://llm:8000")[:2] == [
+        "http://llm:8000",
+        "http://freecad-ai-llm:8000",
+    ]
+    assert llm._candidate_base_urls("http://llm-cuda:8000")[:2] == [
+        "http://llm-cuda:8000",
+        "http://llm-gpu:8000",
+    ]
+
+
+def test_chat_falls_back_to_container_name_when_service_name_dns_fails(monkeypatch):
+    llm = _load_llm_module()
+
+    class _FallbackClient(_FakeClient):
+        def post(self, url, json=None):
+            self.calls.append((url, json))
+            if url.startswith("http://llm:8000"):
+                raise llm.httpx.ConnectError("[Errno -2] Name or service not known")
+            if url.endswith("/completion"):
+                return _FakeResponse({"content": "READY"})
+            if url.endswith("/v1/chat/completions"):
+                return _FakeResponse({"choices": [{"message": {"content": "ok"}}]})
+            raise AssertionError(f"unexpected URL: {url}")
+
+    fake = _FallbackClient([])
+    monkeypatch.setattr(llm.httpx, "Client", lambda timeout=None: fake)
+
+    out = llm.chat([{"role": "user", "content": "hello"}], timeout_s=10, max_attempts=1)
+
+    assert out == "ok"
+    assert fake.calls[0][0] == "http://llm:8000/completion"
+    assert fake.calls[1][0] == "http://freecad-ai-llm:8000/completion"
+    assert fake.calls[2][0] == "http://freecad-ai-llm:8000/v1/chat/completions"
