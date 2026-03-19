@@ -5,7 +5,7 @@ services:
       - LLM_HTTP_CONNECT_TIMEOUT_S=10
       - LLM_HTTP_MAX_ATTEMPTS=2
       - LLM_HTTP_RETRY_BACKOFF_S=1.0
-      - LLM_BASE_URL=http://llm-gpu:8000
+      - LLM_BASE_URL=http://llm-cuda:8000
       - MODEL_ID=gpu-default
       - MODEL_BACKEND=llama.cpp
       - MODEL_DEVICE=gpu
@@ -15,7 +15,8 @@ services:
       - MODEL_ID=gpu-default
       - MODEL_BACKEND=llama.cpp
       - MODEL_DEVICE=gpu
-  llm-gpu:
+
+  llm-cuda:
     deploy:
       resources:
         reservations:
