@@ -1,0 +1,39 @@
+You are modifying a code repository provided as a zip file.
+
+OBJECTIVE:
+- [Describe exactly what needs to be changed or fixed]
+- Be specific about expected behavior and edge cases
+
+CONTEXT:
+- Attached: [repo.zip]
+- Optional: [logs, error output, screenshots]
+- Tech stack: [e.g., Python + FastAPI + Docker]
+- Entry points: [main files if known]
+
+REQUIREMENTS:
+- Diagnose the root cause before making changes
+- Do NOT guess — verify against the code
+- Preserve existing functionality (no regressions)
+- Follow existing code style and patterns
+- Do not remove or weaken existing tests
+- If tests fail, fix the implementation (not the tests)
+
+CHANGES:
+- Make only necessary, minimal changes
+- Call out any assumptions explicitly
+- Add comments where logic is non-obvious
+
+OUTPUT FORMAT:
+1. Root cause analysis (clear + concise)
+2. List of updated files (full paths)
+3. List of new files (if any)
+4. Full updated contents of EACH changed file (complete files, not diffs)
+5. Any new tests added (full code)
+6. Step-by-step instructions to run/verify
+7. Git commit message (plain text)
+
+VALIDATION:
+- Double-check for syntax errors
+- Ensure the solution actually resolves the issue described
+- Ensure no breaking changes were introduced
+
