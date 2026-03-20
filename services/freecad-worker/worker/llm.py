@@ -147,9 +147,12 @@ def _candidate_base_urls(base_url: str) -> list[str]:
     candidates: list[str] = []
 
     def add(url: str) -> None:
-        normalized = str(url or "").strip().rstrip("/")
+        normalized = str(url or '').strip().rstrip('/')
         if normalized and normalized not in candidates:
             candidates.append(normalized)
+
+    add(base_url)
+    add(os.getenv("LLM_BASE_URL", ""))
 
     host_swaps = {
         "http://llm:8000": "http://freecad-ai-llm:8000",
@@ -157,15 +160,8 @@ def _candidate_base_urls(base_url: str) -> list[str]:
         "http://llm-cuda:8000": "http://llm-gpu:8000",
         "http://llm-gpu:8000": "http://llm-cuda:8000",
     }
-
-    add(base_url)
-    add(host_swaps.get(base_url, ""))
-
-    env_url = os.getenv("LLM_BASE_URL", "")
-    env_url = str(env_url or "").strip().rstrip("/")
-    if env_url and env_url not in candidates:
-        add(env_url)
-        add(host_swaps.get(env_url, ""))
+    for current in list(candidates):
+        add(host_swaps.get(current, ""))
 
     return candidates
 

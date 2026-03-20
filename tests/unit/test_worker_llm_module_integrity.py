@@ -8,3 +8,4 @@ def test_worker_llm_module_is_real_code_not_placeholder_text():
     assert "full llm.py content omitted" not in llm_py
     assert "def chat(" in llm_py
     assert "def _candidate_base_urls(" in llm_py
+    assert "import httpx" in llm_py
