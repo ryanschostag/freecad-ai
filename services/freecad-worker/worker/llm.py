@@ -147,7 +147,7 @@ def _candidate_base_urls(base_url: str) -> list[str]:
     candidates: list[str] = []
 
     def add(url: str) -> None:
-        normalized = str(url or '').strip().rstrip('/')
+        normalized = str(url or "").strip().rstrip("/")
         if normalized and normalized not in candidates:
             candidates.append(normalized)
 
@@ -162,7 +162,7 @@ def _candidate_base_urls(base_url: str) -> list[str]:
     add(host_swaps.get(base_url, ""))
 
     env_url = os.getenv("LLM_BASE_URL", "")
-    env_url = str(env_url or '').strip().rstrip('/')
+    env_url = str(env_url or "").strip().rstrip("/")
     if env_url and env_url not in candidates:
         add(env_url)
         add(host_swaps.get(env_url, ""))
