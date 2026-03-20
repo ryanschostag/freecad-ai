@@ -219,6 +219,8 @@ def _wait_for_inference_ready(
                 last_error = f"unexpected status {response.status_code}: {_response_body_text(response)[:200]}"
         except (httpx.ReadTimeout, httpx.ConnectTimeout) as exc:
             last_error = f"{type(exc).__name__}: {exc}"
+        except httpx.ConnectError:
+            raise
         except Exception as exc:
             last_error = f"{type(exc).__name__}: {exc}"
 
