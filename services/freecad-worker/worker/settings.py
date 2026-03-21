@@ -11,7 +11,10 @@ class Settings(BaseSettings):
 
     # Local LLM (llama.cpp server or vLLM OpenAI-compatible)
     # Default matches docker-compose service name.
-    llm_base_url: str = os.getenv('LLM_BASE_URL', 'http://llm:8000')
+    # The compose stack routes the worker to the explicit alias below, so keep
+    # the code default aligned with that runtime configuration even when unit
+    # tests do not inject LLM_BASE_URL into the test-runner environment.
+    llm_base_url: str = os.getenv('LLM_BASE_URL', 'http://freecad-ai-llm:8000')
     llm_model: str | None = None  # optional, depends on backend
 
     # LLM request timeouts (seconds)
