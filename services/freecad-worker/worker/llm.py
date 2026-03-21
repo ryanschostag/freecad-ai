@@ -168,13 +168,15 @@ def _candidate_base_urls(base_url: str) -> list[str]:
 
     add(base_url)
     add(host_swaps.get(base_url, ""))
-    add(host_gateway_swaps.get(base_url, ""))
 
     env_url = os.getenv("LLM_BASE_URL", "")
     env_url = str(env_url or "").strip().rstrip("/")
     if env_url and env_url not in candidates:
         add(env_url)
         add(host_swaps.get(env_url, ""))
+
+    add(host_gateway_swaps.get(base_url, ""))
+    if env_url:
         add(host_gateway_swaps.get(env_url, ""))
 
     return candidates
