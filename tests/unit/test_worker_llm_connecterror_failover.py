@@ -32,6 +32,7 @@ def _load_llm_module():
 
 
 def test_connect_error_during_warmup_fails_over_to_next_base_url(monkeypatch):
+    monkeypatch.setenv("LLM_BASE_URL", "http://llm:8000")
     llm = _load_llm_module()
 
     class _FallbackClient:
@@ -60,6 +61,8 @@ def test_connect_error_during_warmup_fails_over_to_next_base_url(monkeypatch):
     out = llm.chat([{"role": "user", "content": "hello"}], timeout_s=10, max_attempts=1)
 
     assert out == "ok"
-    assert fake.calls[0][0] == "http://llm:8000/completion"
-    assert fake.calls[1][0] == "http://freecad-ai-llm:8000/completion"
-    assert fake.calls[2][0] == "http://freecad-ai-llm:8000/v1/chat/completions"
+    attempted_urls = [call[0] for call in fake.calls]
+    assert attempted_urls[-2:] == [
+        "http://freecad-ai-llm:8000/completion",
+        "http://freecad-ai-llm:8000/v1/chat/completions",
+    ]

@@ -4,7 +4,9 @@ import json
 import os
 import re
 import time
+from ipaddress import IPv4Address
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
@@ -143,6 +145,54 @@ def _sanitize_stop_sequences(stop: list[str] | None) -> list[str] | None:
     return sanitized or None
 
 
+def _linux_default_gateway_ip() -> str:
+    try:
+        with open("/proc/net/route", "r", encoding="utf-8") as handle:
+            next(handle, None)
+            for line in handle:
+                fields = line.strip().split()
+                if len(fields) < 4:
+                    continue
+                destination = fields[1]
+                gateway_hex = fields[2]
+                flags = int(fields[3], 16)
+                if destination != "00000000" or not (flags & 0x2):
+                    continue
+                gateway_int = int(gateway_hex, 16)
+                gateway_bytes = gateway_int.to_bytes(4, byteorder="little", signed=False)
+                gateway_ip = str(IPv4Address(gateway_bytes))
+                if gateway_ip and gateway_ip != "0.0.0.0":
+                    return gateway_ip
+    except Exception:
+        return ""
+    return ""
+
+
+def _replace_url_host(url: str, host: str) -> str:
+    if not url or not host:
+        return ""
+    try:
+        parsed = urlsplit(url)
+    except Exception:
+        return ""
+    if not parsed.scheme or not parsed.netloc:
+        return ""
+    hostname = parsed.hostname
+    if not hostname:
+        return ""
+    netloc = host
+    if parsed.port is not None:
+        netloc = f"{host}:{parsed.port}"
+    return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment)).rstrip("/")
+
+
+def _gateway_url_candidates(url: str) -> list[str]:
+    gateway_ip = _linux_default_gateway_ip()
+    if not gateway_ip:
+        return []
+    return [_replace_url_host(url, gateway_ip)]
+
+
 def _candidate_base_urls(base_url: str) -> list[str]:
     candidates: list[str] = []
 
@@ -175,9 +225,10 @@ def _candidate_base_urls(base_url: str) -> list[str]:
         add(env_url)
         add(host_swaps.get(env_url, ""))
 
-    add(host_gateway_swaps.get(base_url, ""))
-    if env_url:
-        add(host_gateway_swaps.get(env_url, ""))
+    for candidate in (host_gateway_swaps.get(base_url, ""), host_gateway_swaps.get(env_url, "") if env_url else ""):
+        add(candidate)
+        for gateway_url in _gateway_url_candidates(candidate or ""):
+            add(gateway_url)
 
     return candidates
 
@@ -313,6 +364,7 @@ def chat(
 
     last_exc: Exception | None = None
     base_urls = _candidate_base_urls(configured_url)
+    attempted_errors: dict[str, str] = {}
     for attempt in range(1, attempts + 1):
         for url in base_urls:
             endpoint = url + "/v1/chat/completions"
@@ -350,21 +402,28 @@ def chat(
                     )
             except TimeoutError as e:
                 last_exc = e
+                attempted_errors[url] = f"{type(e).__name__}: {e}"
                 continue
             except httpx.HTTPStatusError as e:
                 last_exc = e
+                attempted_errors[url] = f"{type(e).__name__}: {e}"
                 if not _is_loading_response(e.response):
                     break
                 continue
             except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.ConnectError) as e:
                 last_exc = e
+                attempted_errors[url] = f"{type(e).__name__}: {e}"
                 continue
             except Exception as e:
                 last_exc = e
+                attempted_errors[url] = f"{type(e).__name__}: {e}"
                 continue
         if attempt >= attempts:
             break
         time.sleep(backoff_s * attempt)
 
     assert last_exc is not None
+    if attempted_errors:
+        ordered = "; ".join(f"{url} -> {attempted_errors[url]}" for url in base_urls if url in attempted_errors)
+        raise RuntimeError(f"All LLM endpoints failed: {ordered}") from last_exc
     raise last_exc
