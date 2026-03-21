@@ -198,6 +198,11 @@ services:
       - "8000:8000"
     volumes:
       - ./models:/models
+    networks:
+      default:
+        aliases:
+          - llm
+          - freecad-ai-llm
 
   llm-cuda:
     profiles: ["gpu"]
@@ -233,6 +238,11 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+    networks:
+      default:
+        aliases:
+          - llm-cuda
+          - llm-gpu
 
   llm-fake:
     container_name: freecad-ai-llm-fake
@@ -246,6 +256,11 @@ services:
       - "8001:8000"
     volumes:
       - ./tools:/app:ro
+    networks:
+      default:
+        aliases:
+          - llm-fake
+          - freecad-ai-llm-fake
 
   freecad-worker:
     profiles: ["cpu", "gpu"]
