@@ -190,6 +190,20 @@ def _is_loading_response(response: object) -> bool:
     return any(hint in body for hint in LLM_LOADING_HINTS) or status_code in {502, 503, 504}
 
 
+def _build_http_client(client_timeout: httpx.Timeout) -> httpx.Client:
+    """Create an httpx client for internal Docker calls without inheriting ambient env proxies.
+
+    Unit tests monkeypatch httpx.Client with lightweight lambdas that only accept the
+    timeout kwarg. Fall back to a timeout-only constructor when the replacement does
+    not accept trust_env so tests can exercise the chat logic without depending on
+    the concrete httpx.Client signature.
+    """
+    try:
+        return httpx.Client(timeout=client_timeout, trust_env=False)
+    except TypeError:
+        return httpx.Client(timeout=client_timeout)
+
+
 def _wait_for_inference_ready(
     client: httpx.Client,
     base_url: str,
@@ -291,7 +305,7 @@ def chat(
         for url in base_urls:
             endpoint = url + "/v1/chat/completions"
             try:
-                with httpx.Client(timeout=client_timeout, trust_env=False) as client:
+                with _build_http_client(client_timeout) as client:
                     _wait_for_inference_ready(
                         client,
                         url,
