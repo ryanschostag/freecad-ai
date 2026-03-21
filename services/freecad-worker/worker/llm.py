@@ -157,15 +157,25 @@ def _candidate_base_urls(base_url: str) -> list[str]:
         "http://llm-cuda:8000": "http://llm-gpu:8000",
         "http://llm-gpu:8000": "http://llm-cuda:8000",
     }
+    host_gateway_swaps = {
+        "http://llm:8000": "http://host.docker.internal:8000",
+        "http://freecad-ai-llm:8000": "http://host.docker.internal:8000",
+        "http://llm-cuda:8000": "http://host.docker.internal:8000",
+        "http://llm-gpu:8000": "http://host.docker.internal:8000",
+        "http://llm-fake:8000": "http://host.docker.internal:8001",
+        "http://freecad-ai-llm-fake:8000": "http://host.docker.internal:8001",
+    }
 
     add(base_url)
     add(host_swaps.get(base_url, ""))
+    add(host_gateway_swaps.get(base_url, ""))
 
     env_url = os.getenv("LLM_BASE_URL", "")
     env_url = str(env_url or "").strip().rstrip("/")
     if env_url and env_url not in candidates:
         add(env_url)
         add(host_swaps.get(env_url, ""))
+        add(host_gateway_swaps.get(env_url, ""))
 
     return candidates
 
