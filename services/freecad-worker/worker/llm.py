@@ -291,7 +291,7 @@ def chat(
         for url in base_urls:
             endpoint = url + "/v1/chat/completions"
             try:
-                with httpx.Client(timeout=client_timeout) as client:
+                with httpx.Client(timeout=client_timeout, trust_env=False) as client:
                     _wait_for_inference_ready(
                         client,
                         url,
