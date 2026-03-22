@@ -4,6 +4,7 @@ from rq.job import Job
 from rq.utils import import_attribute
 
 from worker.settings import settings
+from worker.llm import wait_until_llm_ready
 
 
 class CompatJob(Job):
@@ -41,6 +42,8 @@ class CompatJob(Job):
 
 
 def main():
+    ready_url = wait_until_llm_ready()
+    print(f"LLM ready for worker startup: {ready_url}", flush=True)
     redis = Redis.from_url(settings.redis_url)
     q = Queue("freecad", connection=redis)
     Worker([q], connection=redis, job_class=CompatJob).work()

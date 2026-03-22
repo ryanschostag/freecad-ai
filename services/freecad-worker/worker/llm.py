@@ -308,6 +308,48 @@ def _wait_for_inference_ready(
         time.sleep(min(2.0, max(0.25, request_timeout_s / 10.0)))
 
 
+
+def wait_until_llm_ready(
+    *,
+    base_url: str | None = None,
+    max_wait_s: float | None = None,
+) -> str:
+    """Block worker startup until at least one candidate LLM endpoint can serve inference."""
+    configured_url = (base_url or settings.llm_base_url or "").rstrip("/")
+    if not configured_url:
+        raise RuntimeError("LLM_BASE_URL is not configured")
+
+    req_timeout_default = float(settings.llm_request_timeout_seconds)
+    connect_timeout_default = float(settings.llm_connect_timeout_seconds)
+    req_timeout = _env_float("LLM_HTTP_TIMEOUT_S", req_timeout_default)
+    connect_timeout = _env_float("LLM_HTTP_CONNECT_TIMEOUT_S", connect_timeout_default)
+    ready_timeout = float(
+        max_wait_s if max_wait_s is not None else _env_float("LLM_READY_TIMEOUT_S", float(_env_int("LLM_READY_TIMEOUT_SECONDS", int(req_timeout_default))))
+    )
+    client_timeout = httpx.Timeout(req_timeout, connect=connect_timeout)
+    deadline = time.monotonic() + max(0.0, ready_timeout)
+    attempted_errors: dict[str, str] = {}
+
+    while True:
+        for url in _candidate_base_urls(configured_url):
+            try:
+                with _build_http_client(client_timeout) as client:
+                    _wait_for_inference_ready(
+                        client,
+                        url,
+                        request_timeout_s=req_timeout,
+                        max_wait_s=min(max(5.0, req_timeout), max(5.0, deadline - time.monotonic())),
+                    )
+                return url
+            except Exception as exc:
+                attempted_errors[url] = f"{type(exc).__name__}: {exc}"
+        if time.monotonic() >= deadline:
+            attempted_summary = "; ".join(f"{url} -> {err}" for url, err in attempted_errors.items())
+            detail = f"All LLM endpoints failed during worker startup: {attempted_summary}" if attempted_summary else "LLM startup readiness check failed"
+            raise RuntimeError(detail)
+        time.sleep(min(2.0, max(0.25, connect_timeout)))
+
+
 def chat(
     messages: list[dict[str, str]],
     temperature: float = 0.1,

@@ -267,6 +267,7 @@ services:
           - freecad-ai-llm-fake
 
   freecad-worker:
+    restart: unless-stopped
     profiles: ["cpu", "gpu"]
     build: ./services/freecad-worker
     environment:

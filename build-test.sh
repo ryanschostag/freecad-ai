@@ -3,6 +3,7 @@ set -euo pipefail
 
 COMPOSE_FILES=(-f docker-compose.yml -f docker-compose.test-override.yml)
 PROFILE=(--profile test)
+PROJECT_NAME=${COMPOSE_PROJECT_NAME:-freecad-ai-test}
 
 down_file="down.log"
 build_file="build.log"
@@ -24,14 +25,14 @@ fi
 mkdir -p "$state_dir"
 echo "Using llama.cpp state directory: $state_dir"
 
-time docker compose "${COMPOSE_FILES[@]}" "${PROFILE[@]}" down 2>&1 | tee $down_file
+time docker compose -p "$PROJECT_NAME" "${COMPOSE_FILES[@]}" "${PROFILE[@]}" down 2>&1 | tee $down_file
 sleep 1
-time docker compose "${COMPOSE_FILES[@]}" "${PROFILE[@]}" build --no-cache 2>&1 | tee $build_file
+time docker compose -p "$PROJECT_NAME" "${COMPOSE_FILES[@]}" "${PROFILE[@]}" build --no-cache 2>&1 | tee $build_file
 sleep 1
-time docker compose "${COMPOSE_FILES[@]}" "${PROFILE[@]}" up -d 2>&1 | tee $up_file
+time docker compose -p "$PROJECT_NAME" "${COMPOSE_FILES[@]}" "${PROFILE[@]}" up -d 2>&1 | tee $up_file
 sleep 1
-time docker compose "${COMPOSE_FILES[@]}" "${PROFILE[@]}" run --rm test-runner 2>&1 | tee $run_file
+time docker compose -p "$PROJECT_NAME" "${COMPOSE_FILES[@]}" "${PROFILE[@]}" run --rm test-runner 2>&1 | tee $run_file
 sleep 1
-time docker compose "${COMPOSE_FILES[@]}" "${PROFILE[@]}" down
+time docker compose -p "$PROJECT_NAME" "${COMPOSE_FILES[@]}" "${PROFILE[@]}" down
 
 echo Complete!
