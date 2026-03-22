@@ -7,12 +7,10 @@ from datetime import datetime, timezone
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
-from rq import Worker
 from sqlalchemy.orm import Session
 
 from app import models
 from app.db import get_db
-from app.queue import get_queue
 from app.schemas import CreateSessionRequest
 from app.settings import Settings
 from app.utils import upsert_time
@@ -20,6 +18,23 @@ from app.utils import upsert_time
 router = APIRouter()
 
 
+
+
+def _get_queue(*args, **kwargs):
+    from app.queue import get_queue
+
+    return get_queue(*args, **kwargs)
+
+
+class _RQWorkerProxy:
+    @staticmethod
+    def all(*args, **kwargs):
+        from rq import Worker
+
+        return Worker.all(*args, **kwargs)
+
+
+Worker = _RQWorkerProxy
 
 
 _QUEUE_WORKER_READY_ALLOW_INLINE_BYPASS: ContextVar[bool] = ContextVar(
@@ -165,7 +180,7 @@ async def ensure_queue_worker_ready() -> None:
     if _QUEUE_WORKER_READY_ALLOW_INLINE_BYPASS.get() and settings.inline_jobs:
         return
 
-    q = get_queue()
+    q = _get_queue()
     now = datetime.now(timezone.utc)
     heartbeat_timeout_s = float(getattr(settings, "queue_worker_heartbeat_timeout_seconds", 120.0))
 
@@ -405,7 +420,7 @@ async def send_message(session_id: str, payload: dict, db: Session = Depends(get
             db.add(models.LogEvent(session_id=session_id, type="job.finished", payload_json={"job_id": job_id}))
             db.commit()
     else:
-        q = get_queue()
+        q = _get_queue()
         q.enqueue_call(
             func="worker.jobs.run_repair_loop_job",
             kwargs={
