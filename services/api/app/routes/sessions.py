@@ -26,6 +26,22 @@ def _get_queue(*args, **kwargs):
     return get_queue(*args, **kwargs)
 
 
+def _get_queue_identity(default_name: str = "freecad") -> tuple[str, object]:
+    """Return queue name/connection even when test stubs leave app.queue incomplete.
+
+    Some isolated unit tests import this module after earlier tests have already
+    populated ``sys.modules["app.queue"]`` with a minimal stub whose
+    ``get_queue()`` returns ``None``. The queue-worker readiness check only needs
+    the queue name and the Redis connection handle for ``Worker.all(...)``. Fall
+    back to the default queue name and a ``None`` connection instead of crashing
+    on ``None.connection`` so readiness logic remains testable and deterministic.
+    """
+    q = _get_queue(default_name)
+    queue_name = str(getattr(q, "name", None) or default_name)
+    connection = getattr(q, "connection", None)
+    return queue_name, connection
+
+
 class _RQWorkerProxy:
     @staticmethod
     def all(*args, **kwargs):
@@ -180,23 +196,23 @@ async def ensure_queue_worker_ready() -> None:
     if _QUEUE_WORKER_READY_ALLOW_INLINE_BYPASS.get() and settings.inline_jobs:
         return
 
-    q = _get_queue()
+    queue_name, queue_connection = _get_queue_identity()
     now = datetime.now(timezone.utc)
     heartbeat_timeout_s = float(getattr(settings, "queue_worker_heartbeat_timeout_seconds", 120.0))
 
     try:
-        workers = Worker.all(connection=q.connection)
+        workers = Worker.all(connection=queue_connection)
     except Exception as exc:
         raise HTTPException(
             status_code=503,
-            detail=f"Unable to inspect queue workers for '{q.name}': {type(exc).__name__}: {exc}",
+            detail=f"Unable to inspect queue workers for '{queue_name}': {type(exc).__name__}: {exc}",
         ) from exc
 
     eligible_workers: list[str] = []
     stale_workers: list[str] = []
     for worker in workers:
         queue_names = _worker_queue_names(worker)
-        if q.name not in queue_names:
+        if queue_name not in queue_names:
             continue
 
         worker_name = str(getattr(worker, "name", "unknown-worker"))
@@ -209,7 +225,7 @@ async def ensure_queue_worker_ready() -> None:
     if eligible_workers:
         return
 
-    detail = f"No live queue worker is available for '{q.name}'."
+    detail = f"No live queue worker is available for '{queue_name}'."
     if stale_workers:
         detail = f"{detail} Stale workers: {', '.join(stale_workers)}"
     else:
