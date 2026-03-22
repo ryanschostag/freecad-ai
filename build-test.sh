@@ -1,7 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-COMPOSE_FILES=(-f docker-compose.yml -f docker-compose.test-override.yml)
+GENERATED_COMPOSE_FILE=.docker-compose.test.generated.yml
+COMPOSE_FILES=(-f "$GENERATED_COMPOSE_FILE" -f docker-compose.test-override.yml)
 PROFILE=(--profile test)
 PROJECT_NAME=${COMPOSE_PROJECT_NAME:-freecad-ai-test}
 
@@ -14,7 +15,9 @@ model_filename="$(basename "$model_file")"
 state_dir_name="${model_filename//./-}"
 state_dir="./models/${state_dir_name}/state"
 
-rm -f *.log
+rm -f *.log "$GENERATED_COMPOSE_FILE"
+
+python3 tools/render_test_compose.py docker-compose.yml "$GENERATED_COMPOSE_FILE"
 
 if [[ ! -f "$model_file" ]]; then
   echo "Missing model file: $model_file" >&2
