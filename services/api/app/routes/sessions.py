@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from contextvars import ContextVar
 from datetime import datetime, timezone
 
 import httpx
@@ -18,6 +19,13 @@ from app.utils import upsert_time
 
 router = APIRouter()
 
+
+
+
+_QUEUE_WORKER_READY_ALLOW_INLINE_BYPASS: ContextVar[bool] = ContextVar(
+    "queue_worker_ready_allow_inline_bypass",
+    default=False,
+)
 
 LLM_LOADING_HINTS = (
     "loading model",
@@ -154,7 +162,7 @@ def _heartbeat_age_seconds(last_heartbeat: object, now: datetime) -> float | Non
 
 async def ensure_queue_worker_ready() -> None:
     settings = Settings()
-    if settings.inline_jobs:
+    if _QUEUE_WORKER_READY_ALLOW_INLINE_BYPASS.get() and settings.inline_jobs:
         return
 
     q = get_queue()
@@ -307,7 +315,11 @@ async def send_message(session_id: str, payload: dict, db: Session = Depends(get
     # Refuse to enqueue when no live worker is available. Without this gate the API
     # can return a job id that remains queued forever when the worker crashes during
     # its LLM startup check.
-    await ensure_queue_worker_ready()
+    queue_worker_ready_bypass_token = _QUEUE_WORKER_READY_ALLOW_INLINE_BYPASS.set(True)
+    try:
+        await ensure_queue_worker_ready()
+    finally:
+        _QUEUE_WORKER_READY_ALLOW_INLINE_BYPASS.reset(queue_worker_ready_bypass_token)
 
     now = datetime.now(timezone.utc)
     time_id = upsert_time(db, now)
