@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
+from rq import Worker
 from sqlalchemy.orm import Session
 
 from app import models
@@ -120,6 +121,79 @@ async def ensure_llm_ready(max_wait_s: float | None = None) -> None:
     raise HTTPException(status_code=503, detail=detail)
 
 
+def _worker_queue_names(worker: object) -> set[str]:
+    queue_names = getattr(worker, "queue_names", None)
+    if callable(queue_names):
+        queue_names = queue_names()
+    if queue_names:
+        return {str(name) for name in queue_names}
+
+    queues = getattr(worker, "queues", None)
+    names: set[str] = set()
+    for queue in queues or ():
+        name = getattr(queue, "name", None)
+        if name:
+            names.add(str(name))
+    return names
+
+
+def _heartbeat_age_seconds(last_heartbeat: object, now: datetime) -> float | None:
+    if last_heartbeat is None:
+        return None
+    if isinstance(last_heartbeat, str):
+        try:
+            last_heartbeat = datetime.fromisoformat(last_heartbeat)
+        except ValueError:
+            return None
+    if not isinstance(last_heartbeat, datetime):
+        return None
+    if last_heartbeat.tzinfo is None:
+        last_heartbeat = last_heartbeat.replace(tzinfo=timezone.utc)
+    return max(0.0, (now - last_heartbeat.astimezone(timezone.utc)).total_seconds())
+
+
+async def ensure_queue_worker_ready() -> None:
+    settings = Settings()
+    if settings.inline_jobs:
+        return
+
+    q = get_queue()
+    now = datetime.now(timezone.utc)
+    heartbeat_timeout_s = float(getattr(settings, "queue_worker_heartbeat_timeout_seconds", 120.0))
+
+    try:
+        workers = Worker.all(connection=q.connection)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Unable to inspect queue workers for '{q.name}': {type(exc).__name__}: {exc}",
+        ) from exc
+
+    eligible_workers: list[str] = []
+    stale_workers: list[str] = []
+    for worker in workers:
+        queue_names = _worker_queue_names(worker)
+        if q.name not in queue_names:
+            continue
+
+        worker_name = str(getattr(worker, "name", "unknown-worker"))
+        heartbeat_age_s = _heartbeat_age_seconds(getattr(worker, "last_heartbeat", None), now)
+        if heartbeat_age_s is None or heartbeat_age_s <= heartbeat_timeout_s:
+            eligible_workers.append(worker_name)
+        else:
+            stale_workers.append(f"{worker_name} ({heartbeat_age_s:.0f}s stale)")
+
+    if eligible_workers:
+        return
+
+    detail = f"No live queue worker is available for '{q.name}'."
+    if stale_workers:
+        detail = f"{detail} Stale workers: {', '.join(stale_workers)}"
+    else:
+        detail = f"{detail} Start the freecad-worker service and verify it stays running."
+    raise HTTPException(status_code=503, detail=detail)
+
+
 def _get_session_or_404(db: Session, session_id: str) -> models.DimSession:
     s = db.query(models.DimSession).filter(models.DimSession.session_id == session_id).first()
     if not s:
@@ -230,10 +304,10 @@ async def send_message(session_id: str, payload: dict, db: Session = Depends(get
     max_repair_iterations = int(payload.get("max_repair_iterations") or 3)
     llm_max_tokens = int(payload.get("llm_max_tokens") or 1200)
 
-    # Do not block job-id creation on LLM warm-up. Slow CPU hosts can take a long
-    # time to become inference-ready even after the HTTP server responds. Queue the
-    # job immediately so the UI always receives a job id, and let the worker wait
-    # for true inference readiness before calling the model.
+    # Refuse to enqueue when no live worker is available. Without this gate the API
+    # can return a job id that remains queued forever when the worker crashes during
+    # its LLM startup check.
+    await ensure_queue_worker_ready()
 
     now = datetime.now(timezone.utc)
     time_id = upsert_time(db, now)
