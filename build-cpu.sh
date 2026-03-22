@@ -95,8 +95,50 @@ wait_for_llm_inference() {
   done
 }
 
+wait_for_worker_llm_route() {
+  local timeout_s="$1"
+  local start_ts
+  start_ts="$(date +%s)"
+  while true; do
+    if docker compose --profile cpu exec -T freecad-worker python - <<'PY' >/dev/null 2>&1
+import os
+import socket
+from urllib.parse import urlsplit
+from urllib.request import urlopen
+
+base_url = os.environ.get("LLM_BASE_URL", "http://freecad-ai-llm:8000").rstrip("/")
+parsed = urlsplit(base_url)
+host = parsed.hostname
+port = parsed.port or (443 if parsed.scheme == "https" else 80)
+if not host:
+    raise SystemExit(1)
+socket.getaddrinfo(host, port)
+for path in ("/health", "/v1/models", "/"):
+    try:
+        with urlopen(base_url + path, timeout=5) as response:
+            if 200 <= getattr(response, "status", 0) < 300:
+                raise SystemExit(0)
+    except Exception:
+        continue
+raise SystemExit(1)
+PY
+    then
+      echo "worker can resolve and reach configured LLM endpoint from inside Docker network"
+      return 0
+    fi
+    if (( $(date +%s) - start_ts >= timeout_s )); then
+      echo "Timed out waiting for freecad-worker to resolve and reach its configured LLM endpoint after ${timeout_s}s" >&2
+      print_service_logs freecad-worker
+      print_service_logs llm
+      return 1
+    fi
+    sleep 2
+  done
+}
+
 wait_for_llm_http "$llm_ready_timeout_s"
 wait_for_llm_inference "$llm_ready_timeout_s" "$llm_request_timeout_s"
+wait_for_worker_llm_route "$llm_ready_timeout_s"
 wait_for_url "http://localhost:8080/health" "api" "$api_ready_timeout_s" || {
   print_service_logs api
   exit 1

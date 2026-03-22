@@ -16,6 +16,11 @@ def test_cpu_profile_script_uses_cpu_down_and_checks_model_file_and_state_dir():
     assert 'wait_for_url() {' in script
     assert 'wait_for_llm_http() {' in script
     assert 'wait_for_llm_inference() {' in script
+    assert 'wait_for_worker_llm_route() {' in script
+    assert 'docker compose --profile cpu exec -T freecad-worker python - <<\'PY\'' in script
+    assert 'socket.getaddrinfo(host, port)' in script
+    assert 'worker can resolve and reach configured LLM endpoint from inside Docker network' in script
+    assert 'print_service_logs freecad-worker' in script
     assert 'llm_ready_timeout_s="${LLM_READY_TIMEOUT_S:-1200}"' in script
     assert 'llm_request_timeout_s="${LLM_REQUEST_TIMEOUT_S:-120}"' in script
     assert 'api_ready_timeout_s="${API_READY_TIMEOUT_S:-90}"' in script

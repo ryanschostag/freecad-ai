@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://cad:cad@localhost:5432/cad"
     artifact_staging_dir: str = "/artifacts_staging"
     rag_sources_config: str = "/config/rag_sources.yaml"
-    llm_base_url: str = "http://llm:8000"
+    llm_base_url: str = "http://freecad-ai-llm:8000"
 
     # Queue/job timeouts
     # - default_job_timeout_seconds: default user-visible timeout for a job
