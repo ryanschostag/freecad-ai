@@ -30,6 +30,31 @@ time docker compose --profile cpu build --no-cache 2>&1 | tee "$build_file"
 sleep 1
 time docker compose --profile cpu up -d 2>&1 | tee "$up_file"
 
+check_service_running() {
+  local service="$1"
+  local container_id
+  local state
+  container_id="$(docker compose --profile cpu ps -q "$service" 2>/dev/null || true)"
+  if [[ -z "$container_id" ]]; then
+    return 0
+  fi
+  state="$(docker inspect -f {{.State.Status}} "$container_id" 2>/dev/null || true)"
+  case "$state" in
+    running|restarting|created|starting|healthy)
+      return 0
+      ;;
+    exited|dead)
+      echo "Service $service is $state; aborting readiness wait early." >&2
+      docker compose --profile cpu ps "$service" >&2 || true
+      print_service_logs "$service"
+      return 1
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+}
+
 print_service_logs() {
   local service="$1"
   echo
@@ -61,6 +86,7 @@ wait_for_llm_http() {
   local start_ts
   start_ts="$(date +%s)"
   while true; do
+    check_service_running llm || return 1
     if curl -fsS "http://localhost:8000/health" >/dev/null 2>&1 || curl -fsS "http://localhost:8000/v1/models" >/dev/null 2>&1; then
       echo "llm HTTP endpoint is reachable: http://localhost:8000"
       return 0
@@ -82,6 +108,7 @@ wait_for_llm_inference() {
   start_ts="$(date +%s)"
   payload='{"prompt":"<|im_start|>user\nRespond with READY only.\n<|im_end|>\n<|im_start|>assistant\n","n_predict":1,"temperature":0,"stop":["<|im_end|>","</s>","<|endoftext|>"]}'
   while true; do
+    check_service_running llm || return 1
     if curl -fsS --max-time "$request_timeout_s" -H 'Content-Type: application/json' -d "$payload" http://localhost:8000/completion >/dev/null 2>&1; then
       echo "llm inference is ready: http://localhost:8000/completion"
       return 0

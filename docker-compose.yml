@@ -33,11 +33,16 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
-      - db
-      - redis
-      - minio
-      - minio-init
-      - freecad-worker
+      db:
+        condition: service_started
+      redis:
+        condition: service_started
+      minio:
+        condition: service_started
+      minio-init:
+        condition: service_completed_successfully
+      freecad-worker:
+        condition: service_started
 
   api-test:
     profiles: ["test"]
@@ -179,7 +184,13 @@ services:
     container_name: freecad-ai-llm
     restart: unless-stopped
     profiles: ["cpu"]
-    image: ghcr.io/ggml-org/llama.cpp:server
+    image: ${LLAMA_CPP_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b8475}
+    healthcheck:
+      test: ["CMD", "/app/llama-server", "--version"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
     environment:
       - LLM_MODEL_PATH=${LLM_MODEL_PATH:-/models/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf}
       - LLM_THREADS=${LLM_THREADS:-8}
@@ -210,7 +221,13 @@ services:
 
   llm-cuda:
     profiles: ["gpu"]
-    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    image: ${LLAMA_CPP_SERVER_CUDA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda-b8475}
+    healthcheck:
+      test: ["CMD", "/app/llama-server", "--version"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
     environment:
       - LLM_MODEL_PATH=${LLM_MODEL_PATH:-/models/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf}
       - LLM_THREADS=${LLM_THREADS:-8}
@@ -300,11 +317,16 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
-      - db
-      - redis
-      - minio
-      - minio-init
-      - llm
+      db:
+        condition: service_started
+      redis:
+        condition: service_started
+      minio:
+        condition: service_started
+      minio-init:
+        condition: service_completed_successfully
+      llm:
+        condition: service_healthy
 
   freecad-worker-test:
     profiles: ["test"]
@@ -328,11 +350,16 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
-      - db
-      - redis
-      - minio
-      - minio-init
-      - llm-fake
+      db:
+        condition: service_started
+      redis:
+        condition: service_started
+      minio:
+        condition: service_started
+      minio-init:
+        condition: service_completed_successfully
+      llm-fake:
+        condition: service_started
 
 volumes:
   pgdata: {}
