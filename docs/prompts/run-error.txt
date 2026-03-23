@@ -2,6 +2,7 @@ There was an error running a command:
 
 <error> 
 
+- you are an expert on this application: study and learn everything about it.
 - diagnose, explain and resolve
 - attached is the latest committed code (freecad-ai-updates.zip)
 - attached is the build log from build-start-cpu-profile.sh (build.zip)
