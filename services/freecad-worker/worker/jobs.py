@@ -50,14 +50,6 @@ def _resolve_freecadcmd() -> str | None:
     return None
 
 
-def _can_compile_python(source: str) -> bool:
-    try:
-        compile(source, "<freecad-macro>", "exec")
-        return True
-    except SyntaxError:
-        return False
-
-
 def _upload_generated_model_artifacts(*, outdir: Path, session_id: str, user_message_id: str) -> list[dict]:
     artifacts: list[dict] = []
     for name in ("model.FCStd", "model.step", "model.stl"):
@@ -79,6 +71,9 @@ def _llm_generation_budget(timeout_seconds: int) -> dict[str, int | float]:
     If we allow multiple long HTTP attempts, the work horse can be killed before
     chat() returns or raises, leaving no diagnostics or artifacts. Reserve a
     small slice for uploads/cleanup and use a single bounded attempt.
+
+    Use a larger token budget than the old 400-token cap so substantial CAD
+    macros are less likely to be truncated mid-statement.
     """
     total = max(60, int(timeout_seconds or 300))
     reserved_for_cleanup = min(120, max(30, total // 8))
@@ -86,8 +81,67 @@ def _llm_generation_budget(timeout_seconds: int) -> dict[str, int | float]:
     return {
         "timeout_s": float(request_timeout),
         "max_attempts": 1,
-        "max_tokens": 400,
+        "max_tokens": 1200,
     }
+
+
+def _python_syntax_error(source: str) -> str | None:
+    try:
+        compile(source, "<freecad-macro>", "exec")
+        return None
+    except SyntaxError as exc:
+        line = (exc.text or "").strip()
+        location = f"line {exc.lineno}" if exc.lineno else "unknown line"
+        detail = exc.msg or "invalid syntax"
+        if line:
+            return f"{detail} at {location}: {line}"
+        return f"{detail} at {location}"
+
+
+def _repair_prompt_for_invalid_python(candidate: str, syntax_error: str) -> str:
+    return (
+        f"The previous macro was not valid Python: {syntax_error}. "
+        "Return a repaired, complete FreeCAD macro. Output ONLY valid Python code. "
+        "Do not include markdown fences or explanations.\n\n"
+        "Previous macro:\n"
+        f"{candidate}"
+    )
+
+
+def _repair_prompt_for_failed_execution(candidate: str, failure: str) -> str:
+    return (
+        "The previous macro failed during headless FreeCAD execution. "
+        "Return a repaired, complete FreeCAD macro. Output ONLY valid Python code. "
+        "Do not include markdown fences or explanations.\n\n"
+        f"Failure: {failure}\n\n"
+        "Previous macro:\n"
+        f"{candidate}"
+    )
+
+
+def _repair_prompt_for_nonzero_exit(candidate: str, stdout: str, stderr: str) -> str:
+    return (
+        "The previous macro exited with a non-zero status in headless FreeCAD. "
+        "Return a repaired, complete FreeCAD macro. Output ONLY valid Python code. "
+        "Do not include markdown fences or explanations.\n\n"
+        f"STDOUT:\n{stdout[:2000]}\n\n"
+        f"STDERR:\n{stderr[:2000]}\n\n"
+        "Previous macro:\n"
+        f"{candidate}"
+    )
+
+
+def _repair_prompt_for_missing_artifacts(candidate: str, stdout: str, stderr: str) -> str:
+    return (
+        "The previous macro ran in headless FreeCAD but did not create any exported model files. "
+        "Return a repaired, complete FreeCAD macro that leaves exportable objects in the active document. "
+        "Output ONLY valid Python code. Do not include markdown fences or explanations.\n\n"
+        f"STDOUT:\n{stdout[:2000]}\n\n"
+        f"STDERR:\n{stderr[:2000]}\n\n"
+        "Previous macro:\n"
+        f"{candidate}"
+    )
+
 
 def run_repair_loop_job(
     *,
@@ -140,51 +194,101 @@ def run_repair_loop_job(
     model_export_stdout = ""
     model_export_stderr = ""
     exported_model_object_keys: list[str] = []
+    generation_attempts: list[dict] = []
 
     llm_budget = _llm_generation_budget(timeout_seconds)
+    max_iterations = max(1, int(max_repair_iterations or 1))
 
-    try:
-        macro_code = chat(
-            messages,
-            timeout_s=float(llm_budget["timeout_s"]),
-            max_attempts=int(llm_budget["max_attempts"]),
-            max_tokens=int(llm_budget["max_tokens"]),
-            stop=["<|im_end|>", "</s>", "<|endoftext|>"],
-        )
-    except Exception as exc:
-        macro_code = ""
-        placeholder_reason = f"llm request failed: {type(exc).__name__}: {exc}"
-        issues.append(placeholder_reason)
-    raw_macro_code = macro_code if isinstance(macro_code, str) else ""
-
-    if not raw_macro_code.strip() and not placeholder_reason:
-        placeholder_reason = "llm returned an empty response"
-        issues.append(placeholder_reason)
-
-    if placeholder_reason:
-        macro_code = (
-            "# Generated macro was empty; writing a safe placeholder.\n"
-            "import FreeCAD as App\n"
-            "App.newDocument('Model')\n"
-        )
-
-    macro_bytes = macro_code.encode("utf-8")
-    macro_key = f"sessions/{session_id}/macros/{user_message_id}.gen0.py"
-    artifacts.append(_put_artifact(key=macro_key, data=macro_bytes, kind="freecad_macro_py", content_type="text/x-python"))
-
+    macro_code = ""
+    raw_macro_code = ""
+    successful_iteration: int | None = None
     freecadcmd = _resolve_freecadcmd()
-    if freecadcmd is None:
-        model_export_skipped_reason = "freecadcmd not available in this runtime"
-    elif not _can_compile_python(macro_code):
-        model_export_skipped_reason = "generated macro is not valid Python; skipped model export"
-    elif not any(export_flags.values()):
-        model_export_skipped_reason = "all model export flags are disabled"
-    else:
+
+    for iteration in range(1, max_iterations + 1):
+        try:
+            candidate = chat(
+                messages,
+                timeout_s=float(llm_budget["timeout_s"]),
+                max_attempts=int(llm_budget["max_attempts"]),
+                max_tokens=int(llm_budget["max_tokens"]),
+                stop=["<|im_end|>", "</s>", "<|endoftext|>"],
+            )
+        except Exception as exc:
+            placeholder_reason = f"llm request failed: {type(exc).__name__}: {exc}"
+            issues.append(placeholder_reason)
+            generation_attempts.append(
+                {
+                    "iteration": iteration,
+                    "status": "llm_error",
+                    "detail": placeholder_reason,
+                }
+            )
+            break
+
+        raw_macro_code = candidate if isinstance(candidate, str) else ""
+        candidate = raw_macro_code
+
+        if not candidate.strip():
+            placeholder_reason = "llm returned an empty response"
+            issues.append(placeholder_reason)
+            generation_attempts.append(
+                {
+                    "iteration": iteration,
+                    "status": "empty_response",
+                    "detail": placeholder_reason,
+                }
+            )
+            break
+
+        syntax_error = _python_syntax_error(candidate)
+        if syntax_error:
+            generation_attempts.append(
+                {
+                    "iteration": iteration,
+                    "status": "invalid_python",
+                    "detail": syntax_error,
+                    "chars": len(candidate),
+                }
+            )
+            macro_code = candidate
+            model_export_skipped_reason = "generated macro is not valid Python"
+            if iteration >= max_iterations:
+                issues.append(f"generated macro is not valid Python after {iteration} attempt(s): {syntax_error}")
+                break
+            messages = [messages[0], {"role": "user", "content": _repair_prompt_for_invalid_python(candidate, syntax_error)}]
+            continue
+
+        macro_code = candidate
+
+        if freecadcmd is None:
+            model_export_skipped_reason = "freecadcmd not available in this runtime"
+            generation_attempts.append(
+                {
+                    "iteration": iteration,
+                    "status": "skipped_no_freecadcmd",
+                    "chars": len(candidate),
+                }
+            )
+            successful_iteration = iteration
+            break
+
+        if not any(export_flags.values()):
+            model_export_skipped_reason = "all model export flags are disabled"
+            generation_attempts.append(
+                {
+                    "iteration": iteration,
+                    "status": "skipped_exports_disabled",
+                    "chars": len(candidate),
+                }
+            )
+            successful_iteration = iteration
+            break
+
         model_export_attempted = True
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)
             macro_path = tmp_path / f"{user_message_id}.py"
-            macro_path.write_text(macro_code, encoding="utf-8")
+            macro_path.write_text(candidate, encoding="utf-8")
             outdir = tmp_path / "out"
             outdir.mkdir(parents=True, exist_ok=True)
 
@@ -198,24 +302,83 @@ def run_repair_loop_job(
                 )
             except Exception as exc:
                 model_export_skipped_reason = f"FreeCAD execution failed: {type(exc).__name__}: {exc}"
-                issues.append(model_export_skipped_reason)
-            else:
-                model_export_stdout = stdout or ""
-                model_export_stderr = stderr or ""
-                model_export_returncode = int(returncode)
-                if model_export_returncode != 0:
-                    model_export_skipped_reason = f"FreeCAD exited with status {model_export_returncode}"
-                    issues.append(model_export_skipped_reason)
-                model_artifacts = _upload_generated_model_artifacts(
-                    outdir=outdir,
-                    session_id=session_id,
-                    user_message_id=user_message_id,
+                generation_attempts.append(
+                    {
+                        "iteration": iteration,
+                        "status": "freecad_exception",
+                        "detail": model_export_skipped_reason,
+                        "chars": len(candidate),
+                    }
                 )
+                if iteration >= max_iterations:
+                    issues.append(model_export_skipped_reason)
+                    break
+                messages = [messages[0], {"role": "user", "content": _repair_prompt_for_failed_execution(candidate, model_export_skipped_reason)}]
+                continue
+
+            model_export_stdout = stdout or ""
+            model_export_stderr = stderr or ""
+            model_export_returncode = int(returncode)
+            if model_export_returncode != 0:
+                model_export_skipped_reason = f"FreeCAD exited with status {model_export_returncode}"
+                generation_attempts.append(
+                    {
+                        "iteration": iteration,
+                        "status": "freecad_nonzero_exit",
+                        "detail": model_export_skipped_reason,
+                        "chars": len(candidate),
+                    }
+                )
+                if iteration >= max_iterations:
+                    issues.append(model_export_skipped_reason)
+                    break
+                messages = [messages[0], {"role": "user", "content": _repair_prompt_for_nonzero_exit(candidate, model_export_stdout, model_export_stderr)}]
+                continue
+
+            model_artifacts = _upload_generated_model_artifacts(
+                outdir=outdir,
+                session_id=session_id,
+                user_message_id=user_message_id,
+            )
+            if model_artifacts:
                 artifacts.extend(model_artifacts)
                 exported_model_object_keys = [a["object_key"] for a in model_artifacts]
-                if not exported_model_object_keys and model_export_skipped_reason is None:
-                    model_export_skipped_reason = "FreeCAD completed but did not produce any model artifacts"
-                    issues.append(model_export_skipped_reason)
+                generation_attempts.append(
+                    {
+                        "iteration": iteration,
+                        "status": "exported_models",
+                        "chars": len(candidate),
+                        "exported_model_object_keys": exported_model_object_keys,
+                    }
+                )
+                successful_iteration = iteration
+                model_export_skipped_reason = None
+                break
+
+            model_export_skipped_reason = "FreeCAD completed but did not produce any model artifacts"
+            generation_attempts.append(
+                {
+                    "iteration": iteration,
+                    "status": "no_model_artifacts",
+                    "detail": model_export_skipped_reason,
+                    "chars": len(candidate),
+                }
+            )
+            if iteration >= max_iterations:
+                issues.append(model_export_skipped_reason)
+                break
+            messages = [messages[0], {"role": "user", "content": _repair_prompt_for_missing_artifacts(candidate, model_export_stdout, model_export_stderr)}]
+
+    if placeholder_reason:
+        macro_code = (
+            "# Generated macro was empty; writing a safe placeholder.\n"
+            "import FreeCAD as App\n"
+            "App.newDocument('Model')\n"
+        )
+
+    macro_bytes = macro_code.encode("utf-8")
+    macro_key = f"sessions/{session_id}/macros/{user_message_id}.gen0.py"
+    artifacts.insert(0, _put_artifact(key=macro_key, data=macro_bytes, kind="freecad_macro_py", content_type="text/x-python"))
 
     diag = {
         "job_id": job_id,
@@ -235,6 +398,8 @@ def run_repair_loop_job(
         "raw_macro_chars": len(raw_macro_code),
         "generated_macro_chars": len(macro_code),
         "issues": issues,
+        "generation_attempts": generation_attempts,
+        "successful_iteration": successful_iteration,
         "model_export_attempted": model_export_attempted,
         "model_export_skipped_reason": model_export_skipped_reason,
         "model_export_returncode": model_export_returncode,
@@ -268,7 +433,7 @@ def run_repair_loop_job(
         "session_id": session_id,
         "user_message_id": user_message_id,
         "passed": not bool(issues),
-        "iterations": 1,
+        "iterations": len(generation_attempts) or 1,
         "issues": issues,
         "artifacts": artifacts,
     }
@@ -278,6 +443,7 @@ def _runner_script() -> str:
     return r"""
 import os, traceback
 import FreeCAD as App
+
 
 def main():
     macro_path = os.environ.get("CAD_MACRO_PATH")

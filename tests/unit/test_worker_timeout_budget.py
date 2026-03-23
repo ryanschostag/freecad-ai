@@ -23,7 +23,7 @@ def test_llm_generation_budget_stays_within_job_timeout():
     budget = jobs._llm_generation_budget(900)
 
     assert budget["max_attempts"] == 1
-    assert budget["max_tokens"] == 400
+    assert budget["max_tokens"] == 1200
     assert 30 <= budget["timeout_s"] < 900
 
 
@@ -56,7 +56,7 @@ def test_run_repair_loop_job_uses_bounded_llm_budget(monkeypatch):
 
     assert result["passed"] is True
     assert seen["max_attempts"] == 1
-    assert seen["max_tokens"] == 400
+    assert seen["max_tokens"] == 1200
     assert seen["timeout_s"] < 900
     assert seen["stop"] == ["<|im_end|>", "</s>", "<|endoftext|>"]
     assert uploads
