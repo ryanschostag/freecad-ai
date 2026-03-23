@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -23,6 +24,52 @@ def _put_artifact(*, key: str, data: bytes, kind: str, content_type: str = "appl
     }
 
 
+def _freecad_artifact_kind(path: Path) -> str | None:
+    suffix = path.suffix.lower()
+    if suffix == ".fcstd":
+        return "freecad_model_fcstd"
+    if suffix == ".step":
+        return "cad_model_step"
+    if suffix == ".stl":
+        return "cad_model_stl"
+    return None
+
+
+def _resolve_freecadcmd() -> str | None:
+    for candidate in (
+        os.getenv("FREECADCMD"),
+        os.getenv("FREECAD_CMD"),
+        "freecadcmd",
+        "FreeCADCmd",
+    ):
+        if not candidate:
+            continue
+        resolved = shutil.which(candidate)
+        if resolved:
+            return resolved
+    return None
+
+
+def _can_compile_python(source: str) -> bool:
+    try:
+        compile(source, "<freecad-macro>", "exec")
+        return True
+    except SyntaxError:
+        return False
+
+
+def _upload_generated_model_artifacts(*, outdir: Path, session_id: str, user_message_id: str) -> list[dict]:
+    artifacts: list[dict] = []
+    for name in ("model.FCStd", "model.step", "model.stl"):
+        path = outdir / name
+        if not path.exists() or not path.is_file():
+            continue
+        kind = _freecad_artifact_kind(path)
+        if not kind:
+            continue
+        object_key = f"sessions/{session_id}/models/{user_message_id}{path.suffix}"
+        artifacts.append(_put_artifact(key=object_key, data=path.read_bytes(), kind=kind))
+    return artifacts
 
 
 def _llm_generation_budget(timeout_seconds: int) -> dict[str, int | float]:
@@ -87,6 +134,12 @@ def run_repair_loop_job(
     artifacts: list[dict] = []
     issues: list[str] = []
     placeholder_reason: str | None = None
+    model_export_attempted = False
+    model_export_skipped_reason: str | None = None
+    model_export_returncode: int | None = None
+    model_export_stdout = ""
+    model_export_stderr = ""
+    exported_model_object_keys: list[str] = []
 
     llm_budget = _llm_generation_budget(timeout_seconds)
 
@@ -119,6 +172,51 @@ def run_repair_loop_job(
     macro_key = f"sessions/{session_id}/macros/{user_message_id}.gen0.py"
     artifacts.append(_put_artifact(key=macro_key, data=macro_bytes, kind="freecad_macro_py", content_type="text/x-python"))
 
+    freecadcmd = _resolve_freecadcmd()
+    if freecadcmd is None:
+        model_export_skipped_reason = "freecadcmd not available in this runtime"
+    elif not _can_compile_python(macro_code):
+        model_export_skipped_reason = "generated macro is not valid Python; skipped model export"
+    elif not any(export_flags.values()):
+        model_export_skipped_reason = "all model export flags are disabled"
+    else:
+        model_export_attempted = True
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            macro_path = tmp_path / f"{user_message_id}.py"
+            macro_path.write_text(macro_code, encoding="utf-8")
+            outdir = tmp_path / "out"
+            outdir.mkdir(parents=True, exist_ok=True)
+
+            try:
+                stdout, stderr, returncode = _run_freecad_headless(
+                    freecadcmd=freecadcmd,
+                    macro_path=str(macro_path),
+                    outdir=str(outdir),
+                    export=export_flags,
+                    timeout_seconds=timeout_seconds,
+                )
+            except Exception as exc:
+                model_export_skipped_reason = f"FreeCAD execution failed: {type(exc).__name__}: {exc}"
+                issues.append(model_export_skipped_reason)
+            else:
+                model_export_stdout = stdout or ""
+                model_export_stderr = stderr or ""
+                model_export_returncode = int(returncode)
+                if model_export_returncode != 0:
+                    model_export_skipped_reason = f"FreeCAD exited with status {model_export_returncode}"
+                    issues.append(model_export_skipped_reason)
+                model_artifacts = _upload_generated_model_artifacts(
+                    outdir=outdir,
+                    session_id=session_id,
+                    user_message_id=user_message_id,
+                )
+                artifacts.extend(model_artifacts)
+                exported_model_object_keys = [a["object_key"] for a in model_artifacts]
+                if not exported_model_object_keys and model_export_skipped_reason is None:
+                    model_export_skipped_reason = "FreeCAD completed but did not produce any model artifacts"
+                    issues.append(model_export_skipped_reason)
+
     diag = {
         "job_id": job_id,
         "session_id": session_id,
@@ -137,6 +235,12 @@ def run_repair_loop_job(
         "raw_macro_chars": len(raw_macro_code),
         "generated_macro_chars": len(macro_code),
         "issues": issues,
+        "model_export_attempted": model_export_attempted,
+        "model_export_skipped_reason": model_export_skipped_reason,
+        "model_export_returncode": model_export_returncode,
+        "model_export_stdout": model_export_stdout[:4000],
+        "model_export_stderr": model_export_stderr[:4000],
+        "exported_model_object_keys": exported_model_object_keys,
     }
     diag_key = f"sessions/{session_id}/diagnostics/{user_message_id}.diagnostics.json"
     artifacts.append(
@@ -163,7 +267,7 @@ def run_repair_loop_job(
         "job_id": job_id,
         "session_id": session_id,
         "user_message_id": user_message_id,
-        "passed": not bool(placeholder_reason),
+        "passed": not bool(issues),
         "iterations": 1,
         "issues": issues,
         "artifacts": artifacts,
