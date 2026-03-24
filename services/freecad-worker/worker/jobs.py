@@ -6,8 +6,11 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+import httpx
+
 from worker.llm import chat
 from worker.storage import put_object
+from worker.settings import settings
 
 
 def _sha256_bytes(data: bytes) -> str:
@@ -23,6 +26,43 @@ def _put_artifact(*, key: str, data: bytes, kind: str, content_type: str = "appl
         "sha256": _sha256_bytes(data),
     }
 
+
+
+
+def _post_internal_job_update(*, job_id: str, path: str, payload: dict) -> None:
+    base_url = (settings.api_base_url or "http://api:8080").rstrip("/")
+    url = f"{base_url}{path.format(job_id=job_id)}"
+    timeout = httpx.Timeout(10.0, connect=3.0)
+    with httpx.Client(timeout=timeout) as client:
+        response = client.post(url, json=payload)
+        response.raise_for_status()
+
+
+def _mark_job_started(*, job_id: str) -> None:
+    worker_id = os.getenv("HOSTNAME") or os.getenv("RQ_WORKER_ID") or "freecad-worker"
+    try:
+        _post_internal_job_update(
+            job_id=job_id,
+            path="/internal/jobs/{job_id}/started",
+            payload={"worker_id": worker_id},
+        )
+    except Exception as exc:
+        print(f"WARN: failed to mark job started for {job_id}: {type(exc).__name__}: {exc}")
+
+
+def _mark_job_complete(*, job_id: str, passed: bool, result: dict | None = None, error: dict | None = None) -> None:
+    try:
+        _post_internal_job_update(
+            job_id=job_id,
+            path="/internal/jobs/{job_id}/complete",
+            payload={
+                "status": "finished" if passed else "failed",
+                "result": result,
+                "error": error,
+            },
+        )
+    except Exception as exc:
+        print(f"WARN: failed to mark job complete for {job_id}: {type(exc).__name__}: {exc}")
 
 def _freecad_artifact_kind(path: Path) -> str | None:
     suffix = path.suffix.lower()
@@ -173,6 +213,8 @@ def run_repair_loop_job(
             "step": bool(export.get("step", True)),
             "stl": bool(export.get("stl", False)),
         }
+
+    _mark_job_started(job_id=job_id)
 
     messages = [
         {
@@ -428,7 +470,7 @@ def run_repair_loop_job(
             )
         )
 
-    return {
+    result = {
         "job_id": job_id,
         "session_id": session_id,
         "user_message_id": user_message_id,
@@ -437,6 +479,15 @@ def run_repair_loop_job(
         "issues": issues,
         "artifacts": artifacts,
     }
+
+    error = None
+    if not result["passed"]:
+        error = {
+            "issues": issues,
+        }
+
+    _mark_job_complete(job_id=job_id, passed=result["passed"], result=result, error=error)
+    return result
 
 
 def _runner_script() -> str:

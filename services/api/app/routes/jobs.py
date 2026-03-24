@@ -130,6 +130,10 @@ def get_job(job_id: str, db: Session = Depends(get_db)):
     else:
         status = rec.status if rec else "queued"
 
+    # Never regress a durable terminal DB state back to a transient Redis queued/started state.
+    if rec and rec.status in {"finished", "failed"} and status in {"queued", "started"}:
+        status = rec.status
+
     # session/user_message from redis meta if present, else db
     session_id = None
     user_message_id = None
