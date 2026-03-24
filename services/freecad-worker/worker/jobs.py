@@ -369,7 +369,7 @@ def run_repair_loop_job(
                 break
             messages = [messages[0], {"role": "user", "content": _repair_prompt_for_missing_artifacts(candidate, model_export_stdout, model_export_stderr)}]
 
-    if placeholder_reason:
+    if placeholder_reason and not macro_code.strip():
         macro_code = (
             "# Generated macro was empty; writing a safe placeholder.\n"
             "import FreeCAD as App\n"
@@ -519,7 +519,7 @@ def _run_freecad_headless(freecadcmd: str, macro_path: str, outdir: str, export:
             }
         )
 
-        cmd = [freecadcmd, "-c", str(runner_path)]
+        cmd = [freecadcmd, str(runner_path)]
         try:
             p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_seconds, env=env)
         except subprocess.TimeoutExpired as exc:
