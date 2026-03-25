@@ -116,3 +116,19 @@ def test_chat_sanitizes_markdown_fence_stop_sequence(monkeypatch):
     payload = fake.calls[0][1]
     assert payload["stop"] == ["<|im_end|>", "</s>"]
     assert out == "import FreeCAD as App\nApp.newDocument('Model')"
+
+
+def test_strip_code_fences_handles_truncated_opening_fence():
+    llm = _load_llm_module()
+
+    out = llm._normalize_generated_text("```python\nimport FreeCAD as App\nApp.newDocument('Model')\n")
+
+    assert out == "import FreeCAD as App\nApp.newDocument('Model')"
+
+
+def test_strip_code_fences_handles_closing_fence_without_opening_pair():
+    llm = _load_llm_module()
+
+    out = llm._normalize_generated_text("import FreeCAD as App\nApp.newDocument('Model')\n```")
+
+    assert out == "import FreeCAD as App\nApp.newDocument('Model')"

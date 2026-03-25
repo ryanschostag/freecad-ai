@@ -101,7 +101,7 @@ def test_run_repair_loop_job_retries_invalid_python_and_uploads_models(monkeypat
     def fake_run_freecad_headless(*, freecadcmd, macro_path, outdir, export, timeout_seconds):
         out = Path(outdir)
         assert freecadcmd == "/usr/bin/freecadcmd"
-        assert Path(macro_path).read_text(encoding="utf-8") == "import FreeCAD as App\nApp.newDocument('Model')\n"
+        assert Path(macro_path).read_text(encoding="utf-8") == "import FreeCAD as App\nApp.newDocument('Model')"
         (out / "model.FCStd").write_bytes(b"fcstd-bytes")
         return "ok", "", 0
 
@@ -175,3 +175,46 @@ def test_run_repair_loop_job_fails_after_invalid_python_exhausts_retries(monkeyp
     ]
     diag_upload = next(u for u in uploads if u["key"].endswith(".diagnostics.json"))
     assert b'"model_export_skipped_reason": "generated macro is not valid Python"' in diag_upload["data"]
+
+
+def test_run_repair_loop_job_normalizes_truncated_markdown_fence_before_validation(monkeypatch):
+    jobs = _load_jobs_module()
+
+    uploads = []
+
+    monkeypatch.setattr(
+        jobs,
+        "chat",
+        lambda *_args, **_kwargs: "```python\nimport FreeCAD as App\nApp.newDocument('Model')\n",
+    )
+    monkeypatch.setattr(jobs, "_resolve_freecadcmd", lambda: "/usr/bin/freecadcmd")
+    monkeypatch.setattr(
+        jobs,
+        "put_object",
+        lambda key, data, content_type="application/octet-stream": uploads.append(
+            {"key": key, "data": data, "content_type": content_type}
+        ),
+    )
+
+    def fake_run_freecad_headless(*, freecadcmd, macro_path, outdir, export, timeout_seconds):
+        out = Path(outdir)
+        assert Path(macro_path).read_text(encoding="utf-8") == "import FreeCAD as App\nApp.newDocument('Model')"
+        (out / "model.FCStd").write_bytes(b"fcstd-bytes")
+        return "ok", "", 0
+
+    monkeypatch.setattr(jobs, "_run_freecad_headless", fake_run_freecad_headless)
+
+    result = jobs.run_repair_loop_job(
+        job_id="job-1",
+        session_id="session-1",
+        user_message_id="message-1",
+        prompt="create a simple box 10 mm x 20 mm x 5 mm",
+        export={"fcstd": True, "step": False, "stl": False},
+        max_repair_iterations=1,
+    )
+
+    assert result["passed"] is True
+    assert result["iterations"] == 1
+    diag_upload = next(u for u in uploads if u["key"].endswith(".diagnostics.json"))
+    assert b'"raw_macro_chars": 50' not in diag_upload["data"]
+    assert b'"status": "exported_models"' in diag_upload["data"]

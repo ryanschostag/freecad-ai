@@ -57,14 +57,21 @@ def _extract_text(value: Any) -> str:
 
 def _strip_code_fences(text: str) -> str:
     s = text.strip()
-    if not s.startswith("```"):
+    if not s:
         return s
-    lines = s.splitlines()
-    if len(lines) >= 2 and lines[-1].strip() == "```":
-        body = lines[1:-1]
-        if body and body[0].strip().lower() in {"python", "py"}:
-            body = body[1:]
-        return "\n".join(body).strip()
+
+    # Handle the common case where the model starts with a fenced code block,
+    # including incomplete or truncated responses that start with a markdown fence
+    # emit the closing fence before max_tokens is reached.
+    if s.startswith("```"):
+        s = re.sub(r"^```[\t ]*[A-Za-z0-9_+-]*\r?\n?", "", s, count=1)
+        s = s.strip()
+
+    # Remove a trailing closing fence even when the opening fence was already
+    # stripped or the model emitted only the closing delimiter.
+    s = re.sub(r"\r?\n```\s*$", "", s).strip()
+    if s == "```":
+        return ""
     return s
 
 

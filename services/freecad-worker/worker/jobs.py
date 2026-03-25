@@ -8,7 +8,7 @@ from pathlib import Path
 
 import httpx
 
-from worker.llm import chat
+from worker.llm import chat, _normalize_generated_text
 from worker.storage import put_object
 from worker.settings import settings
 
@@ -268,7 +268,7 @@ def run_repair_loop_job(
             break
 
         raw_macro_code = candidate if isinstance(candidate, str) else ""
-        candidate = raw_macro_code
+        candidate = _normalize_generated_text(raw_macro_code)
 
         if not candidate.strip():
             placeholder_reason = "llm returned an empty response"
