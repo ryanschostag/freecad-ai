@@ -218,3 +218,58 @@ def test_run_repair_loop_job_normalizes_truncated_markdown_fence_before_validati
     diag_upload = next(u for u in uploads if u["key"].endswith(".diagnostics.json"))
     assert b'"raw_macro_chars": 50' not in diag_upload["data"]
     assert b'"status": "exported_models"' in diag_upload["data"]
+
+
+def test_run_repair_loop_job_uses_compact_retry_prompt_for_probable_truncation(monkeypatch):
+    jobs = _load_jobs_module()
+
+    uploads = []
+    prompts = []
+    responses = iter(
+        [
+            "import FreeCAD as App\n" + "x = (\n" + ("# filler\n" * 200),
+            "import FreeCAD as App\nApp.newDocument('Model')\n",
+        ]
+    )
+
+    def fake_chat(messages, **_kwargs):
+        prompts.append(messages[-1]["content"])
+        return next(responses)
+
+    monkeypatch.setattr(jobs, "chat", fake_chat)
+    monkeypatch.setattr(jobs, "_resolve_freecadcmd", lambda: "/usr/bin/freecadcmd")
+    monkeypatch.setattr(
+        jobs,
+        "put_object",
+        lambda key, data, content_type="application/octet-stream": uploads.append(
+            {"key": key, "data": data, "content_type": content_type}
+        ),
+    )
+
+    def fake_run_freecad_headless(*, freecadcmd, macro_path, outdir, export, timeout_seconds):
+        out = Path(outdir)
+        assert Path(macro_path).read_text(encoding="utf-8") == "import FreeCAD as App\nApp.newDocument('Model')"
+        (out / "model.FCStd").write_bytes(b"fcstd-bytes")
+        return "ok", "", 0
+
+    monkeypatch.setattr(jobs, "_run_freecad_headless", fake_run_freecad_headless)
+
+    result = jobs.run_repair_loop_job(
+        job_id="job-1",
+        session_id="session-1",
+        user_message_id="message-1",
+        prompt="create a straight razor blade assembly",
+        export={"fcstd": True, "step": False, "stl": False},
+        max_repair_iterations=2,
+        timeout_seconds=12000,
+    )
+
+    assert result["passed"] is True
+    assert result["iterations"] == 2
+    assert len(prompts) == 2
+    assert "appears to have been truncated before completion" in prompts[1]
+    assert "Original request:\ncreate a straight razor blade assembly" in prompts[1]
+    assert "Previous macro:" not in prompts[1]
+
+    diag_upload = next(u for u in uploads if u["key"].endswith(".diagnostics.json"))
+    assert b'"probable_truncation": true' in diag_upload["data"]

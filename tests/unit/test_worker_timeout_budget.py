@@ -27,6 +27,16 @@ def test_llm_generation_budget_stays_within_job_timeout():
     assert 30 <= budget["timeout_s"] < 900
 
 
+def test_llm_generation_budget_scales_up_for_long_jobs():
+    jobs = _load_jobs_module()
+
+    budget = jobs._llm_generation_budget(12000)
+
+    assert budget["max_attempts"] == 1
+    assert budget["max_tokens"] == 2400
+    assert 30 <= budget["timeout_s"] < 12000
+
+
 def test_run_repair_loop_job_uses_bounded_llm_budget(monkeypatch):
     jobs = _load_jobs_module()
 

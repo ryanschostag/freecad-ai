@@ -112,16 +112,27 @@ def _llm_generation_budget(timeout_seconds: int) -> dict[str, int | float]:
     chat() returns or raises, leaving no diagnostics or artifacts. Reserve a
     small slice for uploads/cleanup and use a single bounded attempt.
 
-    Use a larger token budget than the old 400-token cap so substantial CAD
-    macros are less likely to be truncated mid-statement.
+    The earlier fixed 1200-token cap proved too small for larger FreeCAD macros.
+    Diagnose bundles showed repeated syntax failures on the final line while the
+    llama.cpp server logs showed generations ending exactly at the configured
+    output cap. Scale the output budget upward when the enclosing job timeout is
+    generous, while keeping the request bounded for shorter jobs.
     """
     total = max(60, int(timeout_seconds or 300))
-    reserved_for_cleanup = min(120, max(30, total // 8))
+    reserved_for_cleanup = min(180, max(45, total // 10))
     request_timeout = max(30, total - reserved_for_cleanup)
+
+    if total >= 3600:
+        max_tokens = 2400
+    elif total >= 1800:
+        max_tokens = 1800
+    else:
+        max_tokens = 1200
+
     return {
         "timeout_s": float(request_timeout),
         "max_attempts": 1,
-        "max_tokens": 1200,
+        "max_tokens": max_tokens,
     }
 
 
@@ -136,6 +147,36 @@ def _python_syntax_error(source: str) -> str | None:
         if line:
             return f"{detail} at {location}: {line}"
         return f"{detail} at {location}"
+
+
+
+
+def _is_probably_truncated_python(candidate: str, syntax_error: str) -> bool:
+    detail = (syntax_error or "").lower()
+    eof_markers = (
+        "was never closed",
+        "unexpected eof",
+        "unterminated string literal",
+        "unterminated triple-quoted string literal",
+        "eof while scanning",
+    )
+    if not any(marker in detail for marker in eof_markers):
+        return False
+    stripped = candidate.rstrip()
+    if not stripped:
+        return False
+    return len(stripped) >= 1000
+
+
+def _repair_prompt_for_truncated_python(original_prompt: str, syntax_error: str) -> str:
+    return (
+        f"The previous macro appears to have been truncated before completion: {syntax_error}. "
+        "Generate a NEW, shorter, complete FreeCAD macro from scratch that satisfies the original request. "
+        "Keep the macro concise and deterministic. Prefer simple Part-based solids and booleans over verbose geometry construction. "
+        "Output ONLY valid Python code. Do not include markdown fences or explanations.\n\n"
+        "Original request:\n"
+        f"{original_prompt}"
+    )
 
 
 def _repair_prompt_for_invalid_python(candidate: str, syntax_error: str) -> str:
@@ -284,12 +325,14 @@ def run_repair_loop_job(
 
         syntax_error = _python_syntax_error(candidate)
         if syntax_error:
+            probable_truncation = _is_probably_truncated_python(candidate, syntax_error)
             generation_attempts.append(
                 {
                     "iteration": iteration,
                     "status": "invalid_python",
                     "detail": syntax_error,
                     "chars": len(candidate),
+                    "probable_truncation": probable_truncation,
                 }
             )
             macro_code = candidate
@@ -297,7 +340,12 @@ def run_repair_loop_job(
             if iteration >= max_iterations:
                 issues.append(f"generated macro is not valid Python after {iteration} attempt(s): {syntax_error}")
                 break
-            messages = [messages[0], {"role": "user", "content": _repair_prompt_for_invalid_python(candidate, syntax_error)}]
+            repair_prompt = (
+                _repair_prompt_for_truncated_python(prompt, syntax_error)
+                if probable_truncation
+                else _repair_prompt_for_invalid_python(candidate, syntax_error)
+            )
+            messages = [messages[0], {"role": "user", "content": repair_prompt}]
             continue
 
         macro_code = candidate
