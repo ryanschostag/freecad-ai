@@ -179,7 +179,7 @@ async function sendPrompt() {
     units: $("units").value,
     tolerance_mm: parseFloat($("tolerance").value || "0.1"),
     timeout_seconds: parseInt($("timeoutSeconds").value || "900", 10),
-    llm_max_tokens: optionalPositiveInt($("llmMaxTokens").value),
+    max_tokens: parseInt($("maxTokens").value || "2400", 10),
   };
 
   setJobOutput({ status: "submitting" });

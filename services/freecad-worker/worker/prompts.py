@@ -50,7 +50,7 @@ def build_repair_prompt(user_prompt: str, macro_code: str, issues: list[dict[str
     issues_block = "\n".join(issue_lines) if issue_lines else "(none)"
     return [
         {"role": "system", "content": SYSTEM},
-        {"role": "user", "content": f"""You previously generated this FreeCAD macro, but validation failed.
+        {"role": "user", "content": f"""You previously generated this FreeCAD macro, but validation failed because it is not valid Python or did not pass validation.
 
 Original request:
 {user_prompt}
@@ -71,7 +71,7 @@ def build_compact_retry_prompt(user_prompt: str, issue_message: str, units: str,
     compact_issue = _truncate_middle(issue_message, 600)
     return [
         {"role": "system", "content": SYSTEM},
-        {"role": "user", "content": f"""The previous macro output was incomplete or malformed.
+        {"role": "user", "content": f"""The previous FreeCAD macro appears to have been truncated before completion.
 
 Original request:
 {compact_request}

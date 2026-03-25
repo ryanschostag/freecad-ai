@@ -378,12 +378,12 @@ async def send_message(session_id: str, payload: dict, db: Session = Depends(get
     units = str(payload.get("units") or "mm")
     tolerance_mm = float(payload.get("tolerance_mm", 0.1))
     max_repair_iterations = int(payload.get("max_repair_iterations") or 3)
-    llm_max_tokens_raw = payload.get("llm_max_tokens")
-    llm_max_tokens = None
-    if llm_max_tokens_raw not in (None, ""):
-        llm_max_tokens = int(llm_max_tokens_raw)
-        if llm_max_tokens <= 0:
-            llm_max_tokens = None
+    requested_max_tokens_raw = payload.get("max_tokens")
+    requested_max_tokens = None
+    if requested_max_tokens_raw not in (None, ""):
+        requested_max_tokens = int(requested_max_tokens_raw)
+        if requested_max_tokens <= 0:
+            requested_max_tokens = None
 
     # Refuse to enqueue when no live worker is available. Without this gate the API
     # can return a job id that remains queued forever when the worker crashes during
@@ -457,7 +457,7 @@ async def send_message(session_id: str, payload: dict, db: Session = Depends(get
                 units=units,
                 tolerance_mm=tolerance_mm,
                 max_repair_iterations=max_repair_iterations,
-                llm_max_tokens=llm_max_tokens,
+                llm_max_tokens=requested_max_tokens,
                 timeout_seconds=timeout_seconds,
             )
         except Exception as exc:
@@ -491,7 +491,7 @@ async def send_message(session_id: str, payload: dict, db: Session = Depends(get
                 "units": units,
                 "tolerance_mm": tolerance_mm,
                 "max_repair_iterations": max_repair_iterations,
-                "llm_max_tokens": llm_max_tokens,
+                "max_tokens": requested_max_tokens,
                 "timeout_seconds": timeout_seconds,
             },
             job_id=job_id,
