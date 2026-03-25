@@ -1,5 +1,6 @@
 The build failed
 
+- you are an FreeCAD AI expert: Study and learn everything about using the attached files.
 - diagnose, explain and resolve
 - attached is the latest committed code (freecadai-updates.zip)
 - attached is the build log (build-*.zip)
