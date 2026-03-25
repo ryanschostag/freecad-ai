@@ -206,6 +206,12 @@ async def send_message(session_id: str, payload: dict, db: Session = Depends(get
 
     settings = Settings()
     timeout_seconds = int(payload.get("timeout_seconds") or settings.default_job_timeout_seconds)
+    requested_max_tokens_raw = payload.get("max_tokens")
+    requested_max_tokens = None
+    if requested_max_tokens_raw not in (None, ""):
+        requested_max_tokens = int(requested_max_tokens_raw)
+        if requested_max_tokens <= 0:
+            raise HTTPException(status_code=422, detail="max_tokens must be a positive integer")
     rq_timeout_seconds = timeout_seconds + settings.job_timeout_buffer_seconds
 
     job_id = str(uuid.uuid4())
@@ -245,6 +251,7 @@ async def send_message(session_id: str, payload: dict, db: Session = Depends(get
                 tolerance_mm=tolerance_mm,
                 max_repair_iterations=3,
                 timeout_seconds=timeout_seconds,
+                max_tokens=requested_max_tokens,
             )
             finished_at = datetime.now(timezone.utc)
             job_run = db.query(models.JobRun).filter(models.JobRun.job_id == job_id).one()
@@ -283,6 +290,7 @@ async def send_message(session_id: str, payload: dict, db: Session = Depends(get
                 "tolerance_mm": tolerance_mm,
                 "max_repair_iterations": 3,
                 "timeout_seconds": timeout_seconds,
+                "max_tokens": requested_max_tokens,
             },
             job_id=job_id,
             timeout=rq_timeout_seconds,

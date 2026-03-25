@@ -8,5 +8,8 @@ def test_web_ui_uses_cpu_friendly_default_timeout_and_polling_tolerance():
 
     assert 'id="timeoutSeconds"' in html
     assert 'value="900"' in html
+    assert 'id="maxTokens"' in html
+    assert 'value="2400"' in html
     assert 'parseInt($("timeoutSeconds").value || "900", 10)' in js
+    assert 'parseInt($("maxTokens").value || "2400", 10)' in js
     assert 'if (consecutiveFailures >= 5)' in js

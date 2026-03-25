@@ -104,7 +104,7 @@ def _upload_generated_model_artifacts(*, outdir: Path, session_id: str, user_mes
     return artifacts
 
 
-def _llm_generation_budget(timeout_seconds: int) -> dict[str, int | float]:
+def _llm_generation_budget(timeout_seconds: int, requested_max_tokens: int | None = None) -> dict[str, int | float]:
     """Keep the LLM call inside the enclosing RQ job timeout.
 
     The queue timeout is enforced outside Python by RQ's work-horse process.
@@ -123,16 +123,27 @@ def _llm_generation_budget(timeout_seconds: int) -> dict[str, int | float]:
     request_timeout = max(30, total - reserved_for_cleanup)
 
     if total >= 3600:
-        max_tokens = 2400
+        default_max_tokens = 2400
     elif total >= 1800:
-        max_tokens = 1800
+        default_max_tokens = 1800
     else:
-        max_tokens = 1200
+        default_max_tokens = 1200
+
+    effective_max_tokens = default_max_tokens
+    if requested_max_tokens is not None:
+        try:
+            requested = int(requested_max_tokens)
+        except (TypeError, ValueError):
+            requested = 0
+        if requested > 0:
+            effective_max_tokens = requested
 
     return {
         "timeout_s": float(request_timeout),
         "max_attempts": 1,
-        "max_tokens": max_tokens,
+        "max_tokens": int(effective_max_tokens),
+        "default_max_tokens": int(default_max_tokens),
+        "requested_max_tokens": int(requested_max_tokens) if requested_max_tokens not in (None, "") else None,
     }
 
 
@@ -236,6 +247,7 @@ def run_repair_loop_job(
     tolerance_mm: float | None = None,
     max_repair_iterations: int = 3,
     timeout_seconds: int = 300,
+    max_tokens: int | None = None,
 ):
     """RQ entrypoint executed by the freecad-worker container."""
 
@@ -279,7 +291,7 @@ def run_repair_loop_job(
     exported_model_object_keys: list[str] = []
     generation_attempts: list[dict] = []
 
-    llm_budget = _llm_generation_budget(timeout_seconds)
+    llm_budget = _llm_generation_budget(timeout_seconds, max_tokens)
     max_iterations = max(1, int(max_repair_iterations or 1))
 
     macro_code = ""
@@ -482,6 +494,7 @@ def run_repair_loop_job(
         "export_list": export_list,
         "max_repair_iterations": max_repair_iterations,
         "timeout_seconds": timeout_seconds,
+        "requested_max_tokens": max_tokens,
         "llm_budget": llm_budget,
         "placeholder_used": bool(placeholder_reason),
         "placeholder_reason": placeholder_reason,

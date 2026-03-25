@@ -24,6 +24,8 @@ def test_llm_generation_budget_stays_within_job_timeout():
 
     assert budget["max_attempts"] == 1
     assert budget["max_tokens"] == 1200
+    assert budget["default_max_tokens"] == 1200
+    assert budget["requested_max_tokens"] is None
     assert 30 <= budget["timeout_s"] < 900
 
 
@@ -34,6 +36,8 @@ def test_llm_generation_budget_scales_up_for_long_jobs():
 
     assert budget["max_attempts"] == 1
     assert budget["max_tokens"] == 2400
+    assert budget["default_max_tokens"] == 2400
+    assert budget["requested_max_tokens"] is None
     assert 30 <= budget["timeout_s"] < 12000
 
 
@@ -62,11 +66,23 @@ def test_run_repair_loop_job_uses_bounded_llm_budget(monkeypatch):
         user_message_id="message-1",
         prompt="create a simple box 10 mm x 20 mm x 5 mm",
         timeout_seconds=900,
+        max_tokens=36000,
     )
 
     assert result["passed"] is True
     assert seen["max_attempts"] == 1
-    assert seen["max_tokens"] == 1200
+    assert seen["max_tokens"] == 36000
     assert seen["timeout_s"] < 900
     assert seen["stop"] == ["<|im_end|>", "</s>", "<|endoftext|>"]
     assert uploads
+
+
+def test_llm_generation_budget_honors_requested_max_tokens():
+    jobs = _load_jobs_module()
+
+    budget = jobs._llm_generation_budget(12000, 36000)
+
+    assert budget["default_max_tokens"] == 2400
+    assert budget["requested_max_tokens"] == 36000
+    assert budget["max_tokens"] == 36000
+
