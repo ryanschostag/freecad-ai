@@ -20,28 +20,17 @@ def _load_jobs_module():
 def test_llm_generation_budget_stays_within_job_timeout():
     jobs = _load_jobs_module()
 
-    budget = jobs._llm_generation_budget(900)
+    budget = jobs._llm_generation_budget(900, prompt_tokens=200)
 
     assert budget["max_attempts"] == 1
-    assert budget["max_tokens"] == 1200
-    assert budget["default_max_tokens"] == 1200
+    assert budget["max_tokens"] > 0
+    assert budget["ctx_size"] == 4096
     assert budget["requested_max_tokens"] is None
+    assert budget["cap_reason"] == "context_window"
     assert 30 <= budget["timeout_s"] < 900
 
 
-def test_llm_generation_budget_scales_up_for_long_jobs():
-    jobs = _load_jobs_module()
-
-    budget = jobs._llm_generation_budget(12000)
-
-    assert budget["max_attempts"] == 1
-    assert budget["max_tokens"] == 2400
-    assert budget["default_max_tokens"] == 2400
-    assert budget["requested_max_tokens"] is None
-    assert 30 <= budget["timeout_s"] < 12000
-
-
-def test_run_repair_loop_job_uses_bounded_llm_budget(monkeypatch):
+def test_run_repair_loop_job_uses_context_aware_llm_budget(monkeypatch):
     jobs = _load_jobs_module()
 
     uploads = []
@@ -66,23 +55,32 @@ def test_run_repair_loop_job_uses_bounded_llm_budget(monkeypatch):
         user_message_id="message-1",
         prompt="create a simple box 10 mm x 20 mm x 5 mm",
         timeout_seconds=900,
-        max_tokens=36000,
     )
 
     assert result["passed"] is True
     assert seen["max_attempts"] == 1
-    assert seen["max_tokens"] == 36000
+    assert seen["max_tokens"] > 0
     assert seen["timeout_s"] < 900
     assert seen["stop"] == ["<|im_end|>", "</s>", "<|endoftext|>"]
     assert uploads
 
 
-def test_llm_generation_budget_honors_requested_max_tokens():
+def test_llm_generation_budget_caps_requested_max_tokens_to_context_window():
     jobs = _load_jobs_module()
 
-    budget = jobs._llm_generation_budget(12000, 36000)
+    budget = jobs._llm_generation_budget(900, 36000, prompt_tokens=1500, ctx_size=4096)
 
-    assert budget["default_max_tokens"] == 2400
     assert budget["requested_max_tokens"] == 36000
-    assert budget["max_tokens"] == 36000
+    assert budget["available_completion_tokens"] == 2340
+    assert budget["max_tokens"] == 2340
+    assert budget["cap_reason"] == "context_window"
 
+
+def test_llm_generation_budget_uses_context_window_when_request_is_unbounded():
+    jobs = _load_jobs_module()
+
+    budget = jobs._llm_generation_budget(900, None, prompt_tokens=1500, ctx_size=4096)
+
+    assert budget["requested_max_tokens"] is None
+    assert budget["max_tokens"] == budget["available_completion_tokens"]
+    assert budget["cap_reason"] == "context_window"

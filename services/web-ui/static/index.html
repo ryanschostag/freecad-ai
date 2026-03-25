@@ -56,9 +56,12 @@
           <label>Timeout (s)</label>
           <input id="timeoutSeconds" type="number" step="1" value="900" />
         </div>
+      </div>
+
+      <div class="grid2">
         <div>
-          <label>Max output tokens</label>
-          <input id="maxTokens" type="number" step="1" value="2400" />
+          <label>LLM max tokens (optional)</label>
+          <input id="llmMaxTokens" type="number" step="1" min="0" value="" placeholder="Automatic from context window" />
         </div>
       </div>
 
