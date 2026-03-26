@@ -1,5 +1,11 @@
 let pollTimer = null;
 
+function optionalPositiveInt(value) {
+  const parsed = parseInt(value || "", 10);
+  if (Number.isNaN(parsed) || parsed <= 0) return null;
+  return parsed;
+}
+
 function $(id) { return document.getElementById(id); }
 
 function setOutput(obj) {
@@ -140,12 +146,9 @@ async function sendPrompt() {
     units: $("units").value,
     tolerance_mm: parseFloat($("tolerance").value || "0.1"),
     timeout_seconds: parseInt($("timeoutSeconds").value || "900", 10),
+    max_tokens: parseInt($("maxTokens").value || "2400", 10),
+    llm_max_tokens: optionalPositiveInt($("llmMaxTokens").value),
   };
-
-  const maxTokensRaw = $("maxTokens") ? $("maxTokens").value.trim() : "";
-  if (maxTokensRaw) {
-    payload.max_tokens = parseInt(maxTokensRaw, 10);
-  }
 
   const data = await apiFetch(`v1/sessions/${sid}/messages`, {
     method: "POST",
