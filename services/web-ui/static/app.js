@@ -2,10 +2,6 @@ let pollTimer = null;
 
 function $(id) { return document.getElementById(id); }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function setOutput(obj) {
   $("output").textContent = typeof obj === "string" ? obj : JSON.stringify(obj, null, 2);
 }
@@ -16,14 +12,6 @@ function setJobOutput(obj) {
 
 function setLogsOutput(obj) {
   $("logsOutput").textContent = typeof obj === "string" ? obj : JSON.stringify(obj, null, 2);
-}
-
-function optionalPositiveInt(value) {
-  const raw = String(value ?? "").trim();
-  if (!raw) return null;
-  const parsed = parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) return null;
-  return parsed;
 }
 
 function setActiveSession(id) {
@@ -133,33 +121,6 @@ async function fetchArtifacts() {
   });
 }
 
-async function sendPromptRequestWithRetry(sessionId, payload, maxAttempts = 6) {
-  let lastError = null;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    try {
-      return await apiFetch(`v1/sessions/${sessionId}/messages`, {
-        method: "POST",
-        body: JSON.stringify(payload),
-      });
-    } catch (error) {
-      lastError = error;
-      const message = String(error && error.message ? error.message : error);
-      const transient = message.includes("HTTP 502") || message.includes("HTTP 503") || message.includes("HTTP 504") || message.includes("LLM is not ready") || message.includes("timed out") || message.includes("NetworkError") || message.includes("Failed to fetch");
-      if (!transient || attempt === maxAttempts) {
-        throw error;
-      }
-      setJobOutput({
-        status: "retrying",
-        attempt,
-        max_attempts: maxAttempts,
-        reason: message,
-      });
-      await sleep(2000);
-    }
-  }
-  throw lastError || new Error("Prompt submission failed.");
-}
-
 async function sendPrompt() {
   const sid = $("sessionId").value.trim();
   if (!sid) throw new Error("Create or provide a session id first.");
@@ -179,16 +140,23 @@ async function sendPrompt() {
     units: $("units").value,
     tolerance_mm: parseFloat($("tolerance").value || "0.1"),
     timeout_seconds: parseInt($("timeoutSeconds").value || "900", 10),
-    max_tokens: parseInt($("maxTokens").value || "2400", 10),
   };
 
-  setJobOutput({ status: "submitting" });
-  const data = await sendPromptRequestWithRetry(sid, payload);
+  const maxTokensRaw = $("maxTokens") ? $("maxTokens").value.trim() : "";
+  if (maxTokensRaw) {
+    payload.max_tokens = parseInt(maxTokensRaw, 10);
+  }
+
+  const data = await apiFetch(`v1/sessions/${sid}/messages`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 
   $("jobId").value = data.job_id;
   setJobOutput({ enqueued: data });
   setOutput({ message_sent: data });
 
+  // auto start polling
   await trackJob(true);
 }
 

@@ -1,10 +1,6 @@
 from __future__ import annotations
 
-import asyncio
-import os
-import sys
 import uuid
-from contextvars import ContextVar
 from datetime import datetime, timezone
 
 import httpx
@@ -13,97 +9,12 @@ from sqlalchemy.orm import Session
 
 from app import models
 from app.db import get_db
+from app.queue import get_queue
 from app.schemas import CreateSessionRequest
 from app.settings import Settings
 from app.utils import upsert_time
 
 router = APIRouter()
-
-
-
-
-def _get_queue(*args, **kwargs):
-    from app.queue import get_queue
-
-    return get_queue(*args, **kwargs)
-
-
-def _get_queue_identity(default_name: str = "freecad") -> tuple[str, object]:
-    """Return queue name/connection even when test stubs leave app.queue incomplete.
-
-    Some isolated unit tests import this module after earlier tests have already
-    populated ``sys.modules["app.queue"]`` with a minimal stub whose
-    ``get_queue()`` returns ``None``. The queue-worker readiness check only needs
-    the queue name and the Redis connection handle for ``Worker.all(...)``. Fall
-    back to the default queue name and a ``None`` connection instead of crashing
-    on ``None.connection`` so readiness logic remains testable and deterministic.
-    """
-    q = _get_queue(default_name)
-    queue_name = str(getattr(q, "name", None) or default_name)
-    connection = getattr(q, "connection", None)
-    return queue_name, connection
-
-
-def _find_pytest_worker_registry_fallback() -> object | None:
-    """Return the current test module's fake worker registry when real rq leaked in.
-
-    Some isolated unit tests load this module with ``sys.modules.setdefault("rq", ...)``
-    after earlier tests have already imported the real ``rq`` package. In that case
-    ``from rq import Worker`` resolves to the real RQ worker class even though the
-    current test module defines a lightweight in-process registry with the expected
-    ``all()`` API. Limit the fallback to pytest runs and prefer the registry from
-    the currently executing test module so unrelated earlier test stubs are ignored.
-    """
-    current_test = os.environ.get("PYTEST_CURRENT_TEST", "")
-    if not current_test:
-        return None
-
-    test_file = current_test.split("::", 1)[0].replace("\\", "/")
-    test_basename = test_file.rsplit("/", 1)[-1]
-
-    for module in tuple(sys.modules.values()):
-        module_file = getattr(module, "__file__", "") or ""
-        module_basename = str(module_file).replace("\\", "/").rsplit("/", 1)[-1]
-        if module_basename != test_basename:
-            continue
-        registry = getattr(module, "_FakeWorkerRegistry", None)
-        if registry is not None and callable(getattr(registry, "all", None)):
-            return registry
-    return None
-
-
-class _RQWorkerProxy:
-    @staticmethod
-    def all(*args, **kwargs):
-        from rq import Worker
-
-        try:
-            return Worker.all(*args, **kwargs)
-        except ValueError:
-            if kwargs.get("connection", object()) is None:
-                fallback = _find_pytest_worker_registry_fallback()
-                if fallback is not None:
-                    return fallback.all(*args, **kwargs)
-            raise
-
-
-Worker = _RQWorkerProxy
-
-
-_QUEUE_WORKER_READY_ALLOW_INLINE_BYPASS: ContextVar[bool] = ContextVar(
-    "queue_worker_ready_allow_inline_bypass",
-    default=False,
-)
-
-LLM_LOADING_HINTS = (
-    "loading model",
-    "model is loading",
-    "model loading",
-    "loading",
-    "initializing",
-    "warm",
-    "slot",
-)
 
 
 def _load_run_repair_loop_job():
@@ -134,140 +45,29 @@ def _load_run_repair_loop_job():
         return run_repair_loop_job
 
 
-def _response_text(response: object) -> str:
-    text = getattr(response, "text", None)
-    if isinstance(text, str):
-        return text
-    content = getattr(response, "content", None)
-    if isinstance(content, bytes):
-        return content.decode("utf-8", errors="ignore")
-    if isinstance(content, str):
-        return content
-    return ""
 
+async def ensure_llm_ready() -> None:
+    """Fail fast if the configured LLM is not reachable.
 
-async def ensure_llm_ready(max_wait_s: float | None = None) -> None:
-    """Fail fast if the configured LLM is not reachable, with a warm-up retry window.
-
-    Session creation can succeed before llama.cpp has finished loading the model.
-    When the user immediately sends a prompt from the web UI, a short fixed probe
-    spuriously fails even though the service is still loading. Retry for a longer,
-    configurable warm-up window so prompt submission can return a job id reliably
-    after startup on CPU hosts.
+    The local llama.cpp server may or may not expose a dedicated /health endpoint
+    depending on build flags. We try a small set of common endpoints.
     """
     settings = Settings()
     base = (settings.llm_base_url or "").rstrip("/")
     if not base:
         raise HTTPException(status_code=503, detail="LLM_BASE_URL is not configured")
 
-    effective_wait_s = float(
-        max_wait_s if max_wait_s is not None else getattr(settings, "llm_ready_timeout_seconds", 300.0)
-    )
     candidates = [f"{base}/health", f"{base}/v1/models", f"{base}/"]
-    single_probe_timeout = max(2.0, float(getattr(settings, "llm_health_timeout_seconds", 2.0)))
-    timeout = httpx.Timeout(single_probe_timeout, connect=min(single_probe_timeout, 5.0))
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + max(0.0, effective_wait_s)
-    last_error: str | None = None
-
+    timeout = httpx.Timeout(2.0, connect=2.0)
     async with httpx.AsyncClient(timeout=timeout) as client:
-        while True:
-            for url in candidates:
-                try:
-                    r = await client.get(url)
-                    body = _response_text(r).lower()
-                    if 200 <= r.status_code < 300:
-                        return
-                    if r.status_code in {408, 425, 429, 500, 502, 503, 504}:
-                        if any(hint in body for hint in LLM_LOADING_HINTS):
-                            last_error = f"{url} still warming up ({r.status_code})"
-                        else:
-                            last_error = f"{url} returned {r.status_code}"
-                    else:
-                        last_error = f"{url} returned {r.status_code}"
-                except Exception as exc:
-                    last_error = f"{type(exc).__name__}: {exc}"
-            if loop.time() >= deadline:
-                break
-            await asyncio.sleep(1.0)
-
-    detail = f"LLM is not ready at {base} after waiting {effective_wait_s:.0f}s"
-    if last_error:
-        detail = f"{detail} ({last_error})"
-    raise HTTPException(status_code=503, detail=detail)
-
-
-def _worker_queue_names(worker: object) -> set[str]:
-    queue_names = getattr(worker, "queue_names", None)
-    if callable(queue_names):
-        queue_names = queue_names()
-    if queue_names:
-        return {str(name) for name in queue_names}
-
-    queues = getattr(worker, "queues", None)
-    names: set[str] = set()
-    for queue in queues or ():
-        name = getattr(queue, "name", None)
-        if name:
-            names.add(str(name))
-    return names
-
-
-def _heartbeat_age_seconds(last_heartbeat: object, now: datetime) -> float | None:
-    if last_heartbeat is None:
-        return None
-    if isinstance(last_heartbeat, str):
-        try:
-            last_heartbeat = datetime.fromisoformat(last_heartbeat)
-        except ValueError:
-            return None
-    if not isinstance(last_heartbeat, datetime):
-        return None
-    if last_heartbeat.tzinfo is None:
-        last_heartbeat = last_heartbeat.replace(tzinfo=timezone.utc)
-    return max(0.0, (now - last_heartbeat.astimezone(timezone.utc)).total_seconds())
-
-
-async def ensure_queue_worker_ready() -> None:
-    settings = Settings()
-    if _QUEUE_WORKER_READY_ALLOW_INLINE_BYPASS.get() and settings.inline_jobs:
-        return
-
-    queue_name, queue_connection = _get_queue_identity()
-    now = datetime.now(timezone.utc)
-    heartbeat_timeout_s = float(getattr(settings, "queue_worker_heartbeat_timeout_seconds", 120.0))
-
-    try:
-        workers = Worker.all(connection=queue_connection)
-    except Exception as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Unable to inspect queue workers for '{queue_name}': {type(exc).__name__}: {exc}",
-        ) from exc
-
-    eligible_workers: list[str] = []
-    stale_workers: list[str] = []
-    for worker in workers:
-        queue_names = _worker_queue_names(worker)
-        if queue_name not in queue_names:
-            continue
-
-        worker_name = str(getattr(worker, "name", "unknown-worker"))
-        heartbeat_age_s = _heartbeat_age_seconds(getattr(worker, "last_heartbeat", None), now)
-        if heartbeat_age_s is None or heartbeat_age_s <= heartbeat_timeout_s:
-            eligible_workers.append(worker_name)
-        else:
-            stale_workers.append(f"{worker_name} ({heartbeat_age_s:.0f}s stale)")
-
-    if eligible_workers:
-        return
-
-    detail = f"No live queue worker is available for '{queue_name}'."
-    if stale_workers:
-        detail = f"{detail} Stale workers: {', '.join(stale_workers)}"
-    else:
-        detail = f"{detail} Start the freecad-worker service and verify it stays running."
-    raise HTTPException(status_code=503, detail=detail)
+        for url in candidates:
+            try:
+                r = await client.get(url)
+                if 200 <= r.status_code < 300:
+                    return
+            except Exception:
+                continue
+    raise HTTPException(status_code=503, detail=f"LLM is not ready at {base}")
 
 
 def _get_session_or_404(db: Session, session_id: str) -> models.DimSession:
@@ -377,22 +177,6 @@ async def send_message(session_id: str, payload: dict, db: Session = Depends(get
     export = payload.get("export") or {}
     units = str(payload.get("units") or "mm")
     tolerance_mm = float(payload.get("tolerance_mm", 0.1))
-    max_repair_iterations = int(payload.get("max_repair_iterations") or 3)
-    requested_max_tokens_raw = payload.get("max_tokens")
-    requested_max_tokens = None
-    if requested_max_tokens_raw not in (None, ""):
-        requested_max_tokens = int(requested_max_tokens_raw)
-        if requested_max_tokens <= 0:
-            requested_max_tokens = None
-
-    # Refuse to enqueue when no live worker is available. Without this gate the API
-    # can return a job id that remains queued forever when the worker crashes during
-    # its LLM startup check.
-    queue_worker_ready_bypass_token = _QUEUE_WORKER_READY_ALLOW_INLINE_BYPASS.set(True)
-    try:
-        await ensure_queue_worker_ready()
-    finally:
-        _QUEUE_WORKER_READY_ALLOW_INLINE_BYPASS.reset(queue_worker_ready_bypass_token)
 
     now = datetime.now(timezone.utc)
     time_id = upsert_time(db, now)
@@ -417,8 +201,13 @@ async def send_message(session_id: str, payload: dict, db: Session = Depends(get
     )
     db.commit()
 
+    # Gate job enqueue on LLM readiness so clients fail fast instead of hanging.
+    await ensure_llm_ready()
+
     settings = Settings()
     timeout_seconds = int(payload.get("timeout_seconds") or settings.default_job_timeout_seconds)
+    max_tokens = payload.get("max_tokens")
+    max_tokens = int(max_tokens) if max_tokens not in (None, "") else None
     rq_timeout_seconds = timeout_seconds + settings.job_timeout_buffer_seconds
 
     job_id = str(uuid.uuid4())
@@ -456,30 +245,35 @@ async def send_message(session_id: str, payload: dict, db: Session = Depends(get
                 export=export,
                 units=units,
                 tolerance_mm=tolerance_mm,
-                max_repair_iterations=max_repair_iterations,
-                llm_max_tokens=requested_max_tokens,
+                max_repair_iterations=3,
                 timeout_seconds=timeout_seconds,
+                max_tokens=max_tokens,
             )
+            finished_at = datetime.now(timezone.utc)
+            job_run = db.query(models.JobRun).filter(models.JobRun.job_id == job_id).one()
+            job_run.status = "finished"
+            job_run.finished_at = finished_at
+            job_run.result_json = result
+            job_run.error_json = {}
+            db.commit()
         except Exception as exc:
             finished_at = datetime.now(timezone.utc)
             job_run = db.query(models.JobRun).filter(models.JobRun.job_id == job_id).one()
             job_run.status = "failed"
             job_run.finished_at = finished_at
-            job_run.error_json = {"detail": str(exc)}
-            db.add(models.LogEvent(session_id=session_id, type="job.failed", payload_json={"job_id": job_id, "detail": str(exc)}))
-            db.commit()
-            raise
-        else:
-            finished_at = datetime.now(timezone.utc)
-            job_run = db.query(models.JobRun).filter(models.JobRun.job_id == job_id).one()
-            job_run.status = result.get("status", "finished")
-            job_run.finished_at = finished_at
-            job_run.result_json = result
-            db.add(models.LogEvent(session_id=session_id, type="job.finished", payload_json={"job_id": job_id}))
+            job_run.result_json = {}
+            job_run.error_json = {"exc_info": f"{type(exc).__name__}: {exc}"}
+            db.add(models.LogEvent(session_id=session_id, type="job.failed", payload_json={"job_id": job_id, "error": job_run.error_json}))
             db.commit()
     else:
-        q = _get_queue()
-        q.enqueue_call(
+        q = get_queue("freecad")
+
+        # IMPORTANT:
+        # Do NOT enqueue a callable here. In our current container mix, rq serializes the
+        # callable into a colon-form reference (e.g. "worker:jobs.run_repair_loop_job"),
+        # and the worker's rq import resolver (import_attribute) cannot resolve that form.
+        # Enqueue a dotted string path instead, which the worker can import consistently.
+        job = q.enqueue_call(
             func="worker.jobs.run_repair_loop_job",
             kwargs={
                 "job_id": job_id,
@@ -490,14 +284,22 @@ async def send_message(session_id: str, payload: dict, db: Session = Depends(get
                 "export": export,
                 "units": units,
                 "tolerance_mm": tolerance_mm,
-                "max_repair_iterations": max_repair_iterations,
-                "max_tokens": requested_max_tokens,
+                "max_repair_iterations": 3,
                 "timeout_seconds": timeout_seconds,
+                "max_tokens": max_tokens,
             },
             job_id=job_id,
             timeout=rq_timeout_seconds,
-            result_ttl=86400,
-            failure_ttl=86400,
+            result_ttl=3600,
+            failure_ttl=3600,
         )
+        job.meta["session_id"] = session_id
+        job.meta["user_message_id"] = user_message_id
+        job.save_meta()
 
-    return {"job_id": job_id, "session_id": session_id, "status": "queued"}
+    return {
+        "job_id": job_id,
+        "session_id": session_id,
+        "user_message_id": user_message_id,
+        "macro_artifact_id": None,
+    }
