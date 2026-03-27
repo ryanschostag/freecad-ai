@@ -1,12 +1,11 @@
 let pollTimer = null;
 
+function $(id) { return document.getElementById(id); }
+
 function optionalPositiveInt(value) {
   const parsed = parseInt(value || "", 10);
-  if (Number.isNaN(parsed) || parsed <= 0) return null;
-  return parsed;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
-
-function $(id) { return document.getElementById(id); }
 
 function setOutput(obj) {
   $("output").textContent = typeof obj === "string" ? obj : JSON.stringify(obj, null, 2);

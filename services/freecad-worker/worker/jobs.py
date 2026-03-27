@@ -9,9 +9,9 @@ from pathlib import Path
 import httpx
 
 from worker.llm import chat, _normalize_generated_text
+from worker.prompts import build_compact_retry_prompt
 from worker.storage import put_object
 from worker.settings import settings
-from worker.prompts import build_compact_retry_prompt
 
 
 def _sha256_bytes(data: bytes) -> str:
@@ -105,26 +105,39 @@ def _upload_generated_model_artifacts(*, outdir: Path, session_id: str, user_mes
     return artifacts
 
 
-def _llm_generation_budget(timeout_seconds: int, max_tokens: int | None = None, *, prompt_tokens: int = 0, ctx_size: int | None = None) -> dict[str, int | float | None]:
-    """Derive a context-aware LLM generation budget that stays within the job timeout."""
+def _llm_generation_budget(
+    timeout_seconds: int,
+    max_tokens: int | None = None,
+    prompt_tokens: int | None = None,
+    ctx_size: int | None = None,
+) -> dict[str, int | float | None | str]:
+    """Compute a context-aware completion budget that stays inside the job timeout."""
     total = max(60, int(timeout_seconds or 300))
     reserved_for_cleanup = min(120, max(30, total // 8))
     request_timeout = max(30, total - reserved_for_cleanup)
-    ctx_value = int(ctx_size or settings.llm_ctx_size or 4096)
-    reserve_tokens = int(getattr(settings, "llm_ctx_reserve_tokens", 256) or 256)
-    prompt_value = max(0, int(prompt_tokens or 0))
-    available_completion_tokens = max(1, ctx_value - prompt_value - reserve_tokens)
-    requested = int(max_tokens) if max_tokens not in (None, "") else None
-    effective = available_completion_tokens if requested is None else max(1, min(requested, available_completion_tokens))
+
+    effective_ctx_size = int(ctx_size or settings.llm_ctx_size or 4096)
+    effective_prompt_tokens = max(0, int(prompt_tokens or 0))
+    reserve_tokens = max(0, int(getattr(settings, "llm_ctx_reserve_tokens", 256) or 256))
+    available_completion_tokens = max(1, effective_ctx_size - effective_prompt_tokens - reserve_tokens)
+
+    requested_max_tokens = None if max_tokens in (None, "") else int(max_tokens)
+    if requested_max_tokens is None:
+        effective_max_tokens = available_completion_tokens
+        cap_reason = "context_window"
+    else:
+        effective_max_tokens = min(requested_max_tokens, available_completion_tokens)
+        cap_reason = "context_window" if requested_max_tokens > available_completion_tokens else "requested"
+
     return {
         "timeout_s": float(request_timeout),
         "max_attempts": 1,
-        "ctx_size": ctx_value,
-        "prompt_tokens": prompt_value,
-        "requested_max_tokens": requested,
+        "ctx_size": effective_ctx_size,
+        "prompt_tokens": effective_prompt_tokens,
+        "requested_max_tokens": requested_max_tokens,
         "available_completion_tokens": available_completion_tokens,
-        "max_tokens": effective,
-        "cap_reason": "context_window",
+        "cap_reason": cap_reason,
+        "max_tokens": effective_max_tokens,
     }
 
 
@@ -142,7 +155,7 @@ def _python_syntax_error(source: str) -> str | None:
 
 
 def _is_probably_truncated_syntax_issue(syntax_error: str) -> bool:
-    lowered = (syntax_error or "").lower()
+    lowered = str(syntax_error or "").lower()
     return any(token in lowered for token in ("was never closed", "unterminated", "unexpected eof", "eof while scanning"))
 
 
@@ -152,8 +165,19 @@ def _is_probable_truncation(candidate: str, syntax_error: str) -> bool:
     return len(candidate) >= 2000 or candidate.count("\n") >= 40
 
 
-def _compact_retry_prompt_for_truncation(prompt: str, units: str | None, tolerance_mm: float | None) -> str:
-    return build_compact_retry_prompt(prompt, "'(' was never closed", units or "mm", tolerance_mm if tolerance_mm is not None else 0.1)[1]["content"]
+def _estimate_prompt_tokens(messages: list[dict]) -> int:
+    text = "\n".join(str(m.get("content") or "") for m in messages)
+    return max(1, (len(text) + 3) // 4)
+
+
+def _compact_retry_prompt_for_truncation(prompt: str, syntax_error: str, units: str | None, tolerance_mm: float | None) -> str:
+    messages = build_compact_retry_prompt(
+        prompt,
+        syntax_error,
+        units or "mm",
+        tolerance_mm if tolerance_mm is not None else 0.1,
+    )
+    return messages[-1]["content"]
 
 
 def _repair_prompt_for_invalid_python(candidate: str, syntax_error: str) -> str:
@@ -214,6 +238,7 @@ def run_repair_loop_job(
     max_repair_iterations: int = 3,
     timeout_seconds: int = 300,
     max_tokens: int | None = None,
+    llm_max_tokens: int | None = None,
 ):
     """RQ entrypoint executed by the freecad-worker container."""
 
@@ -256,10 +281,14 @@ def run_repair_loop_job(
     model_export_stderr = ""
     exported_model_object_keys: list[str] = []
     generation_attempts: list[dict] = []
-    probable_truncation = False
 
-    estimated_prompt_tokens = max(1, len(prompt) // 4)
-    llm_budget = _llm_generation_budget(timeout_seconds, max_tokens=max_tokens, prompt_tokens=estimated_prompt_tokens)
+    effective_requested_max_tokens = llm_max_tokens if llm_max_tokens not in (None, "") else max_tokens
+    llm_budget = _llm_generation_budget(
+        timeout_seconds,
+        max_tokens=effective_requested_max_tokens,
+        prompt_tokens=_estimate_prompt_tokens(messages),
+        ctx_size=settings.llm_ctx_size,
+    )
     max_iterations = max(1, int(max_repair_iterations or 1))
 
     macro_code = ""
@@ -305,12 +334,14 @@ def run_repair_loop_job(
 
         syntax_error = _python_syntax_error(candidate)
         if syntax_error:
+            probable_truncation = _is_probable_truncation(candidate, syntax_error)
             generation_attempts.append(
                 {
                     "iteration": iteration,
                     "status": "invalid_python",
                     "detail": syntax_error,
                     "chars": len(candidate),
+                    "probable_truncation": probable_truncation,
                 }
             )
             macro_code = candidate
@@ -318,9 +349,8 @@ def run_repair_loop_job(
             if iteration >= max_iterations:
                 issues.append(f"generated macro is not valid Python after {iteration} attempt(s): {syntax_error}")
                 break
-            if _is_probable_truncation(candidate, syntax_error):
-                probable_truncation = True
-                retry_prompt = _compact_retry_prompt_for_truncation(prompt, units, tolerance_mm)
+            if probable_truncation:
+                retry_prompt = _compact_retry_prompt_for_truncation(prompt, syntax_error, units, tolerance_mm)
             else:
                 retry_prompt = _repair_prompt_for_invalid_python(candidate, syntax_error)
             messages = [messages[0], {"role": "user", "content": retry_prompt}]
@@ -476,7 +506,6 @@ def run_repair_loop_job(
         "model_export_stdout": model_export_stdout[:4000],
         "model_export_stderr": model_export_stderr[:4000],
         "exported_model_object_keys": exported_model_object_keys,
-        "probable_truncation": probable_truncation,
     }
     diag_key = f"sessions/{session_id}/diagnostics/{user_message_id}.diagnostics.json"
     artifacts.append(

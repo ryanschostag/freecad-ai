@@ -214,7 +214,6 @@ async def send_message(session_id: str, payload: dict, db: Session = Depends(get
         llm_max_tokens = int(llm_max_tokens_raw)
         if llm_max_tokens <= 0:
             llm_max_tokens = None
-    effective_max_tokens = llm_max_tokens if llm_max_tokens is not None else requested_max_tokens
     rq_timeout_seconds = timeout_seconds + settings.job_timeout_buffer_seconds
 
     job_id = str(uuid.uuid4())
@@ -254,7 +253,8 @@ async def send_message(session_id: str, payload: dict, db: Session = Depends(get
                 tolerance_mm=tolerance_mm,
                 max_repair_iterations=3,
                 timeout_seconds=timeout_seconds,
-                max_tokens=effective_max_tokens,
+                max_tokens=requested_max_tokens,
+                llm_max_tokens=llm_max_tokens,
             )
             finished_at = datetime.now(timezone.utc)
             job_run = db.query(models.JobRun).filter(models.JobRun.job_id == job_id).one()
