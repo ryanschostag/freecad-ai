@@ -84,3 +84,21 @@ Keep the macro concise.
 Do not repeat lines or add filler code.
 Return: ONLY the FreeCAD Python macro code."""},
     ]
+
+
+def build_compact_generate_prompt(user_prompt: str, mode: str, units: str, tolerance_mm: float) -> list[dict[str, str]]:
+    compact_request = _truncate_middle(user_prompt, 2400)
+    return [
+        {"role": "system", "content": SYSTEM},
+        {"role": "user", "content": f"""Task mode: {mode}
+Units: {units}
+Tolerance (mm): {tolerance_mm}
+
+User request:
+{compact_request}
+
+Generate a NEW FreeCAD macro from scratch that satisfies the request with the simplest reliable geometry possible.
+Keep the macro concise.
+Do not repeat lines or add filler code.
+Return: ONLY the FreeCAD Python macro code."""},
+    ]
