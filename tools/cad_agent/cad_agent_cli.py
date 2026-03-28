@@ -281,7 +281,6 @@ def cmd_message_send(client: ApiClient, args: argparse.Namespace) -> int:
         "export": _parse_export(args.export),
         "units": args.units,
         "tolerance_mm": float(args.tolerance_mm),
-        "llm_max_tokens": int(args.llm_max_tokens) if int(args.llm_max_tokens) > 0 else None,
     }
     if args.timeout_seconds is not None:
         payload["timeout_seconds"] = int(args.timeout_seconds)
@@ -463,7 +462,6 @@ def cmd_debug_bundle(client: ApiClient, args: argparse.Namespace) -> int:
         "export": _parse_export(args.export),
         "units": args.units,
         "tolerance_mm": float(args.tolerance_mm),
-        "llm_max_tokens": int(args.llm_max_tokens) if int(args.llm_max_tokens) > 0 else None,
     }
     code, msg = client.request("POST", f"/v1/sessions/{sid}/messages", json_body=payload)
     if code != 202 or not isinstance(msg, dict) or "job_id" not in msg:
@@ -521,7 +519,6 @@ def build_parser() -> argparse.ArgumentParser:
     send.add_argument("--tolerance-mm", default="0.1")
     send.add_argument("--timeout-seconds", type=int)
     send.add_argument("--max-repair-iterations", type=int)
-    send.add_argument("--llm-max-tokens", type=int, default=0)
     send.set_defaults(func=cmd_message_send)
 
     pj = sub.add_parser("job", help="job operations")
@@ -553,7 +550,6 @@ def build_parser() -> argparse.ArgumentParser:
     bundle.add_argument("--export", default="fcstd,step")
     bundle.add_argument("--units", default="mm")
     bundle.add_argument("--tolerance-mm", default="0.1")
-    bundle.add_argument("--llm-max-tokens", type=int, default=0)
     bundle.add_argument("--poll-s", default=1.0, type=float)
     bundle.add_argument("--max-wait-s", default=300.0, type=float)
     bundle.set_defaults(func=cmd_debug_bundle)

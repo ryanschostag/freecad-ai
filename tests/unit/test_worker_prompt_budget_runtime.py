@@ -13,35 +13,8 @@ def _load_jobs_module():
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
-    spec.loader.exec_module(module)  # type: ignore[assignment]
+    spec.loader.exec_module(module)
     return module
-
-
-def test_run_repair_loop_job_accepts_llm_max_tokens_alias(monkeypatch):
-    jobs = _load_jobs_module()
-    uploads = []
-    seen = {}
-
-    def fake_chat(messages, **kwargs):
-        seen.update(kwargs)
-        return "import FreeCAD as App\nApp.newDocument('Model')\n"
-
-    monkeypatch.setattr(jobs, "chat", fake_chat)
-    monkeypatch.setattr(jobs, "_resolve_freecadcmd", lambda: None)
-    monkeypatch.setattr(jobs, "put_object", lambda key, data, content_type=None: uploads.append((key, data, content_type)))
-
-    result = jobs.run_repair_loop_job(
-        job_id="job-1",
-        session_id="session-1",
-        user_message_id="msg-1",
-        prompt="make a cube",
-        timeout_seconds=120,
-        llm_max_tokens=321,
-    )
-
-    assert result["passed"] is True
-    assert seen["max_tokens"] == 321
-    assert uploads
 
 
 def test_run_repair_loop_job_compacts_oversized_initial_prompt_before_generation(monkeypatch):
@@ -49,7 +22,7 @@ def test_run_repair_loop_job_compacts_oversized_initial_prompt_before_generation
     seen_messages = []
 
     def fake_chat(messages, **kwargs):
-        seen_messages.append(messages)
+        seen_messages.append((messages, kwargs))
         return "import FreeCAD as App\nApp.newDocument('Model')\n"
 
     monkeypatch.setattr(jobs, "chat", fake_chat)
@@ -67,7 +40,9 @@ def test_run_repair_loop_job_compacts_oversized_initial_prompt_before_generation
 
     assert result["passed"] is True
     assert seen_messages
-    assert "...<snip>..." in seen_messages[0][1]["content"]
+    assert "...<snip>..." in seen_messages[0][0][1]["content"]
+    assert "timeout_s" in seen_messages[0][1]
+    assert "max_tokens" not in seen_messages[0][1]
 
 
 def test_short_incomplete_import_is_treated_as_probable_truncation():

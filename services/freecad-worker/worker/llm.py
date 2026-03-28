@@ -62,7 +62,7 @@ def _strip_code_fences(text: str) -> str:
 
     # Handle the common case where the model starts with a fenced code block,
     # including incomplete or truncated responses that start with a markdown fence
-    # emit the closing fence before max_tokens is reached.
+    # emit the closing fence before generation stops.
     if s.startswith("```"):
         s = re.sub(r"^```[\t ]*[A-Za-z0-9_+-]*\r?\n?", "", s, count=1)
         s = s.strip()
@@ -142,7 +142,6 @@ def _sanitize_stop_sequences(stop: list[str] | None) -> list[str] | None:
 def chat(
     messages: list[dict[str, str]],
     temperature: float = 0.1,
-    max_tokens: int = 1200,
     *,
     timeout_s: float | None = None,
     max_attempts: int | None = None,
@@ -168,7 +167,6 @@ def chat(
         "model": settings.llm_model or "local-model",
         "messages": messages,
         "temperature": temperature,
-        "max_tokens": max_tokens,
     }
     sanitized_stop = _sanitize_stop_sequences(stop)
     if sanitized_stop:
@@ -205,7 +203,7 @@ def chat(
                 # /completion endpoint before declaring the response empty.
                 completion_payload = {
                     "prompt": _messages_to_prompt(messages),
-                    "n_predict": max_tokens,
+                    "n_predict": -1,
                     "temperature": temperature,
                     "stop": sanitized_stop or ["<|im_end|>", "</s>", "<|endoftext|>"],
                 }

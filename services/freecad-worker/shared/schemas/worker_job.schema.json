@@ -117,9 +117,6 @@
         },
         "max_repair_iterations": {
           "type": "integer"
-        },
-        "llm_max_tokens": {
-          "type": ["integer", "null"]
         }
       }
     }

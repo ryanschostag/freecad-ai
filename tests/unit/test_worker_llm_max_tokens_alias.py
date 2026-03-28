@@ -9,42 +9,15 @@ def _load_jobs_module():
     if str(worker_root) not in sys.path:
         sys.path.insert(0, str(worker_root))
     module_path = worker_root / "worker" / "jobs.py"
-    spec = importlib.util.spec_from_file_location("worker_jobs_llm_max_tokens_alias_test", module_path)
+    spec = importlib.util.spec_from_file_location("worker_jobs_no_token_alias_test", module_path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
-    spec.loader.exec_module(module)  # type: ignore[assignment]
+    spec.loader.exec_module(module)
     return module
 
 
-def test_run_repair_loop_job_accepts_llm_max_tokens_alias(monkeypatch):
+def test_run_repair_loop_job_does_not_accept_llm_max_tokens_alias_anymore():
     jobs = _load_jobs_module()
-
-    seen = {}
-    uploads = []
-
-    def fake_chat(messages, **kwargs):
-        seen.update(kwargs)
-        return "import FreeCAD as App\nApp.newDocument('Model')\n"
-
-    monkeypatch.setattr(jobs, "chat", fake_chat)
-    monkeypatch.setattr(
-        jobs,
-        "put_object",
-        lambda key, data, content_type="application/octet-stream": uploads.append(
-            {"key": key, "data": data, "content_type": content_type}
-        ),
-    )
-
-    result = jobs.run_repair_loop_job(
-        job_id="job-1",
-        session_id="session-1",
-        user_message_id="message-1",
-        prompt="create a simple box 10 mm x 20 mm x 5 mm",
-        timeout_seconds=900,
-        llm_max_tokens=256,
-    )
-
-    assert result["passed"] is True
-    assert seen["max_tokens"] == 256
-    assert uploads
+    assert 'llm_max_tokens' not in jobs.run_repair_loop_job.__code__.co_varnames
+    assert 'max_tokens' not in jobs.run_repair_loop_job.__code__.co_varnames
