@@ -637,6 +637,12 @@ def _collect_shapes_from_globals(g, seen):
     return collected
 
 
+def _collect_export_objects(g):
+    doc_shapes, seen = _collect_shapes_from_documents()
+    global_shapes = _collect_shapes_from_globals(g, seen)
+    return doc_shapes + global_shapes
+
+
 def _build_export_document(shape_items):
     try:
         existing = App.getDocument("ExportModel")
@@ -649,7 +655,7 @@ def _build_export_document(shape_items):
     for index, (name, shape) in enumerate(shape_items, start=1):
         label = name or f"Result{index}"
         safe_name = "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in label) or f"Result{index}"
-        feature = doc.addObject("Part::Feature", safe_name[:64])
+        feature = doc.addObject("Part::Feature", f"Recovered_{safe_name[:54]}")
         feature.Shape = shape.copy() if hasattr(shape, "copy") else shape
         export_objs.append(feature)
     try:
@@ -657,18 +663,6 @@ def _build_export_document(shape_items):
     except Exception as e:
         print("VALIDATION:FREECAD_EXCEPTION:" + str(e))
     return doc, export_objs
-
-
-def _save_fcstd(doc, path):
-    try:
-        doc.saveAs(path)
-    except Exception as e:
-        print("VALIDATION:EXPORT_FAILED:FCSTD:" + str(e))
-        return False
-    exists = os.path.exists(path) and os.path.getsize(path) > 0
-    if not exists:
-        print("VALIDATION:EXPORT_FAILED:FCSTD:missing_output")
-    return exists
 
 
 def main():
@@ -701,18 +695,22 @@ def main():
         except Exception as e:
             print("VALIDATION:FREECAD_EXCEPTION:" + str(e))
 
-    doc_shapes, seen = _collect_shapes_from_documents()
-    global_shapes = _collect_shapes_from_globals(g, seen)
-    shape_items = doc_shapes + global_shapes
+    shape_items = _collect_export_objects(g)
     if not shape_items:
         print("VALIDATION:NO_EXPORTABLE_SHAPES")
         return
 
-    export_doc, export_objs = _build_export_document(shape_items)
+    doc, export_objs = _build_export_document(shape_items)
     base = os.path.join(outdir, "model")
 
     if export_fcstd == "1":
-        _save_fcstd(export_doc, base + ".FCStd")
+        try:
+            doc.saveAs(base + ".FCStd")
+        except Exception as e:
+            print("VALIDATION:EXPORT_FAILED:FCSTD:" + str(e))
+        else:
+            if not (os.path.exists(base + ".FCStd") and os.path.getsize(base + ".FCStd") > 0):
+                print("VALIDATION:EXPORT_FAILED:FCSTD:missing_output")
 
     if export_step == "1":
         try:
