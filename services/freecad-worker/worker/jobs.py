@@ -575,39 +575,57 @@ def _non_null_shape(value):
     return None
 
 
-def _ensure_document():
-    doc = App.ActiveDocument
-    if doc is not None:
-        return doc
-    docs = list(App.listDocuments().values())
-    if docs:
-        try:
-            App.setActiveDocument(docs[0].Name)
-        except Exception:
-            pass
-        return App.ActiveDocument or docs[0]
-    return App.newDocument("Model")
-
-
-def _collect_export_objects(doc, g):
-    export_objs = []
-    for obj in getattr(doc, "Objects", []):
-        shape = _non_null_shape(obj)
-        if shape is not None:
-            export_objs.append(obj)
-
-    if export_objs:
-        return export_objs
-
-    recovered = []
+def _all_documents():
+    try:
+        docs = list(App.listDocuments().values())
+    except Exception:
+        docs = []
+    active = getattr(App, "ActiveDocument", None)
+    ordered = []
     seen = set()
+    if active is not None:
+        ordered.append(active)
+        seen.add(getattr(active, "Name", id(active)))
+    for doc in docs:
+        key = getattr(doc, "Name", id(doc))
+        if key in seen:
+            continue
+        ordered.append(doc)
+        seen.add(key)
+    return ordered
+
+
+def _collect_shapes_from_documents():
+    collected = []
+    seen = set()
+    for doc in _all_documents():
+        try:
+            objects = list(getattr(doc, "Objects", []))
+        except Exception:
+            objects = []
+        for obj in objects:
+            shape = _non_null_shape(obj)
+            if shape is None:
+                continue
+            try:
+                sig = shape.hashCode()
+            except Exception:
+                sig = id(shape)
+            if sig in seen:
+                continue
+            seen.add(sig)
+            collected.append((getattr(obj, "Name", "Result"), shape))
+    return collected, seen
+
+
+def _collect_shapes_from_globals(g, seen):
+    collected = []
     for name, value in sorted(g.items()):
         if name.startswith("__"):
             continue
         shape = _non_null_shape(value)
         if shape is None:
             continue
-        sig = None
         try:
             sig = shape.hashCode()
         except Exception:
@@ -615,18 +633,42 @@ def _collect_export_objects(doc, g):
         if sig in seen:
             continue
         seen.add(sig)
-        feature = doc.addObject("Part::Feature", f"Recovered_{name}")
-        feature.Shape = shape
-        recovered.append(feature)
+        collected.append((name, shape))
+    return collected
 
-    if recovered:
-        try:
-            doc.recompute()
-        except Exception as e:
-            print("VALIDATION:FREECAD_EXCEPTION:" + str(e))
-        return recovered
 
-    return []
+def _build_export_document(shape_items):
+    try:
+        existing = App.getDocument("ExportModel")
+        if existing is not None:
+            App.closeDocument(existing.Name)
+    except Exception:
+        pass
+    doc = App.newDocument("ExportModel")
+    export_objs = []
+    for index, (name, shape) in enumerate(shape_items, start=1):
+        label = name or f"Result{index}"
+        safe_name = "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in label) or f"Result{index}"
+        feature = doc.addObject("Part::Feature", safe_name[:64])
+        feature.Shape = shape.copy() if hasattr(shape, "copy") else shape
+        export_objs.append(feature)
+    try:
+        doc.recompute()
+    except Exception as e:
+        print("VALIDATION:FREECAD_EXCEPTION:" + str(e))
+    return doc, export_objs
+
+
+def _save_fcstd(doc, path):
+    try:
+        doc.saveAs(path)
+    except Exception as e:
+        print("VALIDATION:EXPORT_FAILED:FCSTD:" + str(e))
+        return False
+    exists = os.path.exists(path) and os.path.getsize(path) > 0
+    if not exists:
+        print("VALIDATION:EXPORT_FAILED:FCSTD:missing_output")
+    return exists
 
 
 def main():
@@ -645,7 +687,6 @@ def main():
     except Exception as e:
         print("VALIDATION:CHDIR_FAILED:" + str(e))
 
-    doc = _ensure_document()
     g = {"App": App, "FreeCAD": App, "Part": Part}
     with open(macro_path, "r", encoding="utf-8") as f:
         code = f.read()
@@ -654,25 +695,31 @@ def main():
     except SystemExit as e:
         print("VALIDATION:EXEC_SYSTEM_EXIT:" + str(getattr(e, "code", 0)))
 
-    doc = _ensure_document()
-    try:
-        doc.recompute()
-    except Exception as e:
-        print("VALIDATION:FREECAD_EXCEPTION:" + str(e))
+    for doc in _all_documents():
+        try:
+            doc.recompute()
+        except Exception as e:
+            print("VALIDATION:FREECAD_EXCEPTION:" + str(e))
 
-    export_objs = _collect_export_objects(doc, g)
+    doc_shapes, seen = _collect_shapes_from_documents()
+    global_shapes = _collect_shapes_from_globals(g, seen)
+    shape_items = doc_shapes + global_shapes
+    if not shape_items:
+        print("VALIDATION:NO_EXPORTABLE_SHAPES")
+        return
+
+    export_doc, export_objs = _build_export_document(shape_items)
     base = os.path.join(outdir, "model")
 
     if export_fcstd == "1":
-        try:
-            doc.saveAs(base + ".FCStd")
-        except Exception as e:
-            print("VALIDATION:EXPORT_FAILED:FCSTD:" + str(e))
+        _save_fcstd(export_doc, base + ".FCStd")
 
     if export_step == "1":
         try:
             import Import
             Import.export(export_objs, base + ".step")
+            if not (os.path.exists(base + ".step") and os.path.getsize(base + ".step") > 0):
+                print("VALIDATION:EXPORT_FAILED:STEP:missing_output")
         except Exception as e:
             print("VALIDATION:EXPORT_FAILED:STEP:" + str(e))
 
@@ -680,6 +727,8 @@ def main():
         try:
             import Mesh
             Mesh.export(export_objs, base + ".stl")
+            if not (os.path.exists(base + ".stl") and os.path.getsize(base + ".stl") > 0):
+                print("VALIDATION:EXPORT_FAILED:STL:missing_output")
         except Exception as e:
             print("VALIDATION:EXPORT_FAILED:STL:" + str(e))
 
