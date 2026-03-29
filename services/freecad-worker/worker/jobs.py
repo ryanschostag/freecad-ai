@@ -541,6 +541,71 @@ def _runner_script() -> str:
     return r"""
 import os, traceback
 import FreeCAD as App
+import Part
+
+
+def _non_null_shape(value):
+    try:
+        shape = getattr(value, "Shape", value)
+        if isinstance(shape, Part.Shape) and not shape.isNull():
+            return shape
+    except Exception:
+        return None
+    return None
+
+
+def _ensure_document():
+    doc = App.ActiveDocument
+    if doc is not None:
+        return doc
+    docs = list(App.listDocuments().values())
+    if docs:
+        try:
+            App.setActiveDocument(docs[0].Name)
+        except Exception:
+            pass
+        return App.ActiveDocument or docs[0]
+    return App.newDocument("Model")
+
+
+def _collect_export_objects(doc, g):
+    export_objs = []
+    for obj in getattr(doc, "Objects", []):
+        shape = _non_null_shape(obj)
+        if shape is not None:
+            export_objs.append(obj)
+
+    if export_objs:
+        return export_objs
+
+    recovered = []
+    seen = set()
+    for name, value in sorted(g.items()):
+        if name.startswith("__"):
+            continue
+        shape = _non_null_shape(value)
+        if shape is None:
+            continue
+        sig = None
+        try:
+            sig = shape.hashCode()
+        except Exception:
+            sig = id(shape)
+        if sig in seen:
+            continue
+        seen.add(sig)
+        feature = doc.addObject("Part::Feature", f"Recovered_{name}")
+        feature.Shape = shape
+        recovered.append(feature)
+
+    if recovered:
+        try:
+            doc.recompute()
+        except Exception as e:
+            print("VALIDATION:FREECAD_EXCEPTION:" + str(e))
+        return recovered
+
+    return []
 
 
 def main():
@@ -555,26 +620,29 @@ def main():
 
     os.makedirs(outdir, exist_ok=True)
 
-    if App.ActiveDocument is None:
-        App.newDocument("Model")
-
-    g = {"App": App}
+    doc = _ensure_document()
+    g = {"App": App, "FreeCAD": App, "Part": Part}
     with open(macro_path, "r", encoding="utf-8") as f:
         code = f.read()
-    exec(compile(code, macro_path, "exec"), g, g)
+    try:
+        exec(compile(code, macro_path, "exec"), g, g)
+    except SystemExit as e:
+        print("VALIDATION:EXEC_SYSTEM_EXIT:" + str(getattr(e, "code", 0)))
 
-    doc = App.ActiveDocument
+    doc = _ensure_document()
     try:
         doc.recompute()
     except Exception as e:
         print("VALIDATION:FREECAD_EXCEPTION:" + str(e))
 
+    export_objs = _collect_export_objects(doc, g)
     base = os.path.join(outdir, "model")
 
     if export_fcstd == "1":
-        doc.saveAs(base + ".FCStd")
-
-    export_objs = [o for o in doc.Objects if hasattr(o, "Shape")]
+        try:
+            doc.saveAs(base + ".FCStd")
+        except Exception as e:
+            print("VALIDATION:EXPORT_FAILED:FCSTD:" + str(e))
 
     if export_step == "1":
         try:
