@@ -93,14 +93,35 @@ def _resolve_freecadcmd() -> str | None:
 
 def _upload_generated_model_artifacts(*, outdir: Path, session_id: str, user_message_id: str) -> list[dict]:
     artifacts: list[dict] = []
-    for name in ("model.FCStd", "model.step", "model.stl"):
-        path = outdir / name
-        if not path.exists() or not path.is_file():
-            continue
+    preferred_names = [outdir / "model.FCStd", outdir / "model.step", outdir / "model.stl"]
+    discovered: list[Path] = []
+    seen: set[Path] = set()
+
+    for path in preferred_names:
+        if path.exists() and path.is_file() and path not in seen:
+            discovered.append(path)
+            seen.add(path)
+
+    for pattern in ("*.FCStd", "*.fcstd", "*.step", "*.stp", "*.stl"):
+        for path in sorted(outdir.glob(pattern)):
+            if path.is_file() and path not in seen:
+                discovered.append(path)
+                seen.add(path)
+
+    suffix_counters: dict[str, int] = {}
+    for path in discovered:
         kind = _freecad_artifact_kind(path)
         if not kind:
-            continue
-        object_key = f"sessions/{session_id}/models/{user_message_id}{path.suffix}"
+            # normalize .stp to the step kind and extension if present
+            if path.suffix.lower() == ".stp":
+                kind = "cad_model_step"
+            else:
+                continue
+        canonical_suffix = ".step" if path.suffix.lower() == ".stp" else path.suffix
+        index = suffix_counters.get(canonical_suffix, 0)
+        suffix_counters[canonical_suffix] = index + 1
+        stem = user_message_id if index == 0 else f"{user_message_id}.{index}"
+        object_key = f"sessions/{session_id}/models/{stem}{canonical_suffix}"
         artifacts.append(_put_artifact(key=object_key, data=path.read_bytes(), kind=kind))
     return artifacts
 
@@ -619,6 +640,10 @@ def main():
         raise RuntimeError("CAD_MACRO_PATH env var not set")
 
     os.makedirs(outdir, exist_ok=True)
+    try:
+        os.chdir(outdir)
+    except Exception as e:
+        print("VALIDATION:CHDIR_FAILED:" + str(e))
 
     doc = _ensure_document()
     g = {"App": App, "FreeCAD": App, "Part": Part}
