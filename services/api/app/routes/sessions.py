@@ -178,7 +178,6 @@ async def send_message(session_id: str, payload: dict, db: Session = Depends(get
     units = str(payload.get("units") or "mm")
     tolerance_mm = float(payload.get("tolerance_mm", 0.1))
 
-    timeout_seconds = int(payload.get("timeout_seconds") or settings.default_job_timeout_seconds)
     now = datetime.now(timezone.utc)
     time_id = upsert_time(db, now)
     user_message_id = str(uuid.uuid4())
@@ -197,15 +196,7 @@ async def send_message(session_id: str, payload: dict, db: Session = Depends(get
         models.LogEvent(
             session_id=session_id,
             type="message.user",
-            payload_json={
-                "message_id": user_message_id,
-                "mode": mode,
-                "prompt": content,
-                "export": export,
-                "units": units,
-                "tolerance_mm": tolerance_mm,
-                "timeout_seconds": timeout_seconds if "timeout_seconds" in locals() else None,
-            },
+            payload_json={"message_id": user_message_id, "mode": mode},
         )
     )
     db.commit()
@@ -213,8 +204,6 @@ async def send_message(session_id: str, payload: dict, db: Session = Depends(get
     # Gate job enqueue on LLM readiness so clients fail fast instead of hanging.
     await ensure_llm_ready()
 
-    settings = Settings()
-    rq_timeout_seconds = timeout_seconds + settings.job_timeout_buffer_seconds
 
     job_id = str(uuid.uuid4())
 
