@@ -52,6 +52,18 @@ def _mark_job_started(*, job_id: str) -> None:
         print(f"WARN: failed to mark job started for {job_id}: {type(exc).__name__}: {exc}")
 
 
+
+
+def _mark_job_retrying(*, job_id: str, retry_count: int, reason: str | None = None) -> None:
+    try:
+        _post_internal_job_update(
+            job_id=job_id,
+            path="/internal/jobs/{job_id}/retrying",
+            payload={"retry_count": int(retry_count), "reason": reason},
+        )
+    except Exception as exc:  # pragma: no cover
+        print(f"WARN: failed to mark job retrying for {job_id}: {type(exc).__name__}: {exc}")
+
 def _mark_job_complete(*, job_id: str, passed: bool, result: dict | None = None, error: dict | None = None) -> None:
     try:
         _post_internal_job_update(
@@ -370,6 +382,7 @@ def run_repair_loop_job(
             )
             macro_code = candidate
             model_export_skipped_reason = "generated macro is not valid Python"
+            _mark_job_retrying(job_id=job_id, retry_count=iteration, reason=syntax_error)
             print(json.dumps({"status": "retrying", "retry-count": iteration, "reason": syntax_error}))
             if iteration >= max_iterations:
                 issues.append(f"generated macro is not valid Python after {iteration} attempt(s): {syntax_error}")
@@ -394,6 +407,7 @@ def run_repair_loop_job(
             )
             macro_code = candidate
             model_export_skipped_reason = validation_error
+            _mark_job_retrying(job_id=job_id, retry_count=iteration, reason=validation_error)
             print(json.dumps({"status": "retrying", "retry-count": iteration, "reason": validation_error}))
             if iteration >= max_iterations:
                 issues.append(f"generated macro failed validation after {iteration} attempt(s): {validation_error}")
@@ -465,6 +479,7 @@ def run_repair_loop_job(
                 if iteration >= max_iterations:
                     issues.append(model_export_skipped_reason)
                     break
+                _mark_job_retrying(job_id=job_id, retry_count=iteration, reason=model_export_skipped_reason)
                 print(json.dumps({"status": "retrying", "retry-count": iteration, "reason": model_export_skipped_reason}))
                 messages = [messages[0], {"role": "user", "content": _repair_prompt_for_failed_execution(candidate, model_export_skipped_reason)}]
                 continue

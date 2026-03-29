@@ -125,13 +125,13 @@ def get_job(job_id: str, db: Session = Depends(get_db)):
     if j:
         raw = j.get_status()  # queued/started/finished/failed/deferred
         status = "queued" if raw in {"queued","deferred"} else raw
-        if status not in {"queued","started","finished","failed"}:
+        if status not in {"queued","started","retrying","finished","failed"}:
             status = "queued"
     else:
         status = rec.status if rec else "queued"
 
     # Never regress a durable terminal DB state back to a transient Redis queued/started state.
-    if rec and rec.status in {"finished", "failed"} and status in {"queued", "started"}:
+    if rec and rec.status in {"finished", "failed"} and status in {"queued", "started", "retrying"}:
         status = rec.status
 
     # session/user_message from redis meta if present, else db
@@ -159,7 +159,7 @@ def get_job(job_id: str, db: Session = Depends(get_db)):
     # Update persisted record from live job info (idempotent)
     if rec and status != rec.status:
         rec.status = status
-        if status == "started" and rec.started_at is None:
+        if status in {"started", "retrying"} and rec.started_at is None:
             rec.started_at = now
         if status in {"finished", "failed"} and rec.finished_at is None:
             rec.finished_at = now
