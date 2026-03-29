@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -156,6 +157,22 @@ def _python_syntax_error(source: str) -> str | None:
         if line:
             return f"{detail} at {location}: {line}"
         return f"{detail} at {location}"
+
+
+def _macro_validation_error(source: str) -> str | None:
+    patterns = [
+        (r"(?m)\bFreeCAD\.export\s*\(", "FreeCAD.export is not a valid export API here; do not export from the macro"),
+        (r"(?m)\bApp\.export\s*\(", "App.export is not a valid export API here; do not export from the macro"),
+        (r"(?m)\bFreeCAD\.saveDocument\s*\(", "FreeCAD.saveDocument must not be used in generated macros"),
+        (r"(?m)\bApp\.saveDocument\s*\(", "App.saveDocument must not be used in generated macros"),
+        (r"(?m)\bdoc\.saveAs\s*\(", "doc.saveAs must not be used in generated macros"),
+        (r"(?m)\bImport\.export\s*\(", "Import.export must not be used in generated macros"),
+        (r"(?m)\bMesh\.export\s*\(", "Mesh.export must not be used in generated macros"),
+    ]
+    for pattern, message in patterns:
+        if re.search(pattern, source or ""):
+            return message
+    return None
 
 
 def _is_probably_truncated_syntax_issue(syntax_error: str) -> bool:
@@ -353,6 +370,7 @@ def run_repair_loop_job(
             )
             macro_code = candidate
             model_export_skipped_reason = "generated macro is not valid Python"
+            print(json.dumps({"status": "retrying", "retry-count": iteration, "reason": syntax_error}))
             if iteration >= max_iterations:
                 issues.append(f"generated macro is not valid Python after {iteration} attempt(s): {syntax_error}")
                 break
@@ -362,6 +380,34 @@ def run_repair_loop_job(
             else:
                 retry_prompt = _repair_prompt_for_invalid_python(candidate, syntax_error)
             messages = [messages[0], {"role": "user", "content": retry_prompt}]
+            continue
+
+        validation_error = _macro_validation_error(candidate)
+        if validation_error:
+            generation_attempts.append(
+                {
+                    "iteration": iteration,
+                    "status": "invalid_macro_semantics",
+                    "detail": validation_error,
+                    "chars": len(candidate),
+                }
+            )
+            macro_code = candidate
+            model_export_skipped_reason = validation_error
+            print(json.dumps({"status": "retrying", "retry-count": iteration, "reason": validation_error}))
+            if iteration >= max_iterations:
+                issues.append(f"generated macro failed validation after {iteration} attempt(s): {validation_error}")
+                break
+            semantic_failure = (
+                "The previous macro failed validation before execution. "
+                "The worker performs FCStd/STEP/STL export after the macro finishes, so the macro must not call export or save APIs itself. "
+                "Return a repaired, complete FreeCAD macro that only creates geometry and leaves exportable objects in the active document. "
+                "Output ONLY valid Python code. Do not include markdown fences or explanations.\n\n"
+                f"Validation failure: {validation_error}\n\n"
+                "Previous macro:\n"
+                f"{candidate}"
+            )
+            messages = [messages[0], {"role": "user", "content": semantic_failure}]
             continue
 
         macro_code = candidate
@@ -419,6 +465,7 @@ def run_repair_loop_job(
                 if iteration >= max_iterations:
                     issues.append(model_export_skipped_reason)
                     break
+                print(json.dumps({"status": "retrying", "retry-count": iteration, "reason": model_export_skipped_reason}))
                 messages = [messages[0], {"role": "user", "content": _repair_prompt_for_failed_execution(candidate, model_export_skipped_reason)}]
                 continue
 
@@ -438,6 +485,7 @@ def run_repair_loop_job(
                 if iteration >= max_iterations:
                     issues.append(model_export_skipped_reason)
                     break
+                print(json.dumps({"status": "retrying", "retry-count": iteration, "reason": model_export_skipped_reason}))
                 messages = [messages[0], {"role": "user", "content": _repair_prompt_for_nonzero_exit(candidate, model_export_stdout, model_export_stderr)}]
                 continue
 
@@ -473,7 +521,9 @@ def run_repair_loop_job(
             if iteration >= max_iterations:
                 issues.append(model_export_skipped_reason)
                 break
-            messages = [messages[0], {"role": "user", "content": _repair_prompt_for_missing_artifacts(candidate, model_export_stdout, model_export_stderr)}]
+            no_artifact_failure = _repair_prompt_for_missing_artifacts(candidate, model_export_stdout, model_export_stderr)
+            print(json.dumps({"status": "retrying", "retry-count": iteration, "reason": model_export_skipped_reason}))
+            messages = [messages[0], {"role": "user", "content": no_artifact_failure}]
 
     if placeholder_reason and not macro_code.strip():
         macro_code = (
