@@ -1,22 +1,18 @@
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.db import Base, engine
+from app.db import init_db
 
 
-def setup_module(module):
-    Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
-
-
-def teardown_module(module):
-    Base.metadata.drop_all(bind=engine)
+async def _noop_llm_ready() -> None:
+    return None
 
 
 def test_send_message_with_content_only_payload_does_not_raise_unboundlocal(monkeypatch):
+    init_db()
     client = TestClient(app)
 
-    monkeypatch.setattr("app.routes.sessions.ensure_llm_ready", lambda: None)
+    monkeypatch.setattr("app.routes.sessions.ensure_llm_ready", _noop_llm_ready)
 
     created = client.post("/v1/sessions", json={"title": "t"})
     assert created.status_code == 201
