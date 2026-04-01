@@ -311,6 +311,7 @@ def run_repair_loop_job(
     model_export_returncode: int | None = None
     model_export_stdout = ""
     model_export_stderr = ""
+    runner_status: dict | None = None
     exported_model_object_keys: list[str] = []
     generation_attempts: list[dict] = []
     probable_truncation = False
@@ -484,6 +485,7 @@ def run_repair_loop_job(
                 messages = [messages[0], {"role": "user", "content": _repair_prompt_for_failed_execution(candidate, model_export_skipped_reason)}]
                 continue
 
+            runner_status = _read_runner_status(str(outdir))
             model_export_stdout = stdout or ""
             model_export_stderr = stderr or ""
             model_export_returncode = int(returncode)
@@ -525,6 +527,11 @@ def run_repair_loop_job(
                 break
 
             model_export_skipped_reason = "FreeCAD completed but did not produce any model artifacts"
+            if runner_status and runner_status.get("runner_invoked") and not runner_status.get("outputs"):
+                if runner_status.get("exception"):
+                    model_export_skipped_reason += f"; runner exception: {runner_status.get('exception').splitlines()[-1]}"
+                elif runner_status.get("reason"):
+                    model_export_skipped_reason += f"; runner reason: {runner_status.get('reason')}"
             generation_attempts.append(
                 {
                     "iteration": iteration,
@@ -579,6 +586,7 @@ def run_repair_loop_job(
         "model_export_returncode": model_export_returncode,
         "model_export_stdout": model_export_stdout[:4000],
         "model_export_stderr": model_export_stderr[:4000],
+        "runner_status": runner_status,
         "exported_model_object_keys": exported_model_object_keys,
         "probable_truncation": probable_truncation,
     }
@@ -625,9 +633,22 @@ def run_repair_loop_job(
 
 def _runner_script() -> str:
     return r"""
+import json
 import os, traceback
 import FreeCAD as App
 import Part
+
+
+def _status_path(outdir):
+    return os.path.join(outdir, "runner_status.json")
+
+
+def _write_status(outdir, payload):
+    try:
+        with open(_status_path(outdir), "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=2, sort_keys=True)
+    except Exception:
+        pass
 
 
 def _non_null_shape(value):
@@ -737,7 +758,18 @@ def main():
     export_step = os.environ.get("CAD_EXPORT_STEP", "1")
     export_stl = os.environ.get("CAD_EXPORT_STL", "0")
 
+    status = {
+        "runner_invoked": True,
+        "macro_path": macro_path,
+        "outdir": outdir,
+        "documents": [],
+        "shape_count": 0,
+        "outputs": [],
+    }
+
     if not macro_path:
+        status["error"] = "CAD_MACRO_PATH env var not set"
+        _write_status(outdir, status)
         raise RuntimeError("CAD_MACRO_PATH env var not set")
 
     os.makedirs(outdir, exist_ok=True)
@@ -745,6 +777,7 @@ def main():
         os.chdir(outdir)
     except Exception as e:
         print("VALIDATION:CHDIR_FAILED:" + str(e))
+        status["chdir_failed"] = str(e)
 
     g = {"App": App, "FreeCAD": App, "Part": Part}
     with open(macro_path, "r", encoding="utf-8") as f:
@@ -753,16 +786,25 @@ def main():
         exec(compile(code, macro_path, "exec"), g, g)
     except SystemExit as e:
         print("VALIDATION:EXEC_SYSTEM_EXIT:" + str(getattr(e, "code", 0)))
+        status["system_exit"] = getattr(e, "code", 0)
 
     for doc in _all_documents():
         try:
             doc.recompute()
         except Exception as e:
             print("VALIDATION:FREECAD_EXCEPTION:" + str(e))
+        status["documents"].append({
+            "name": getattr(doc, "Name", None),
+            "label": getattr(doc, "Label", None),
+            "object_count": len(list(getattr(doc, "Objects", []) or [])),
+        })
 
     shape_items = _collect_export_objects(g)
+    status["shape_count"] = len(shape_items)
     if not shape_items:
         print("VALIDATION:NO_EXPORTABLE_SHAPES")
+        status["reason"] = "no_exportable_shapes"
+        _write_status(outdir, status)
         return
 
     doc, export_objs = _build_export_document(shape_items)
@@ -773,9 +815,13 @@ def main():
             doc.saveAs(base + ".FCStd")
         except Exception as e:
             print("VALIDATION:EXPORT_FAILED:FCSTD:" + str(e))
+            status.setdefault("export_errors", []).append("FCSTD:" + str(e))
         else:
             if not (os.path.exists(base + ".FCStd") and os.path.getsize(base + ".FCStd") > 0):
                 print("VALIDATION:EXPORT_FAILED:FCSTD:missing_output")
+                status.setdefault("export_errors", []).append("FCSTD:missing_output")
+            else:
+                status["outputs"].append(base + ".FCStd")
 
     if export_step == "1":
         try:
@@ -783,8 +829,12 @@ def main():
             Import.export(export_objs, base + ".step")
             if not (os.path.exists(base + ".step") and os.path.getsize(base + ".step") > 0):
                 print("VALIDATION:EXPORT_FAILED:STEP:missing_output")
+                status.setdefault("export_errors", []).append("STEP:missing_output")
+            else:
+                status["outputs"].append(base + ".step")
         except Exception as e:
             print("VALIDATION:EXPORT_FAILED:STEP:" + str(e))
+            status.setdefault("export_errors", []).append("STEP:" + str(e))
 
     if export_stl == "1":
         try:
@@ -792,16 +842,24 @@ def main():
             Mesh.export(export_objs, base + ".stl")
             if not (os.path.exists(base + ".stl") and os.path.getsize(base + ".stl") > 0):
                 print("VALIDATION:EXPORT_FAILED:STL:missing_output")
+                status.setdefault("export_errors", []).append("STL:missing_output")
+            else:
+                status["outputs"].append(base + ".stl")
         except Exception as e:
             print("VALIDATION:EXPORT_FAILED:STL:" + str(e))
+            status.setdefault("export_errors", []).append("STL:" + str(e))
 
-if __name__ == "__main__":
-    try:
-        main()
-    except Exception:
-        traceback.print_exc()
-        raise
+    _write_status(outdir, status)
+
+
+try:
+    main()
+except Exception:
+    outdir = os.environ.get("CAD_OUTDIR") or os.getcwd()
+    _write_status(outdir, {"runner_invoked": True, "exception": traceback.format_exc()})
+    raise
 """
+
 
 
 def _run_freecad_headless(freecadcmd: str, macro_path: str, outdir: str, export: dict, timeout_seconds: int):
@@ -829,6 +887,16 @@ def _run_freecad_headless(freecadcmd: str, macro_path: str, outdir: str, export:
             raise RuntimeError("FreeCAD execution timed out") from exc
 
         return p.stdout, p.stderr, p.returncode
+
+
+def _read_runner_status(outdir: str) -> dict | None:
+    status_path = Path(outdir) / "runner_status.json"
+    if not status_path.exists():
+        return None
+    try:
+        return json.loads(status_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"runner_status_read_error": True}
 
 
 def main():
