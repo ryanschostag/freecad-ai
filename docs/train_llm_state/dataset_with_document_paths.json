@@ -1,0 +1,26 @@
+{
+  "model": {
+    "model_id": "trained-freecad-docs-profile",
+    "backend": "llama.cpp",
+    "device": "cpu"
+  },
+  "epochs": 2,
+  "examples": [
+    {
+      "prompt": "Create a bracket with two mounting holes.",
+      "response": "Build the base feature first, add hole sketches or subtractive cylinders, recompute, then validate the final solid before export."
+    },
+    {
+      "prompt": "Export the generated model for manufacturing review.",
+      "response": "Export solids as STEP for CAD interchange and export STL only when mesh output is required."
+    }
+  ],
+  "documents": [
+    "Favor explicit dimensions and deterministic object creation in generated macros."
+  ],
+  "document_paths": [
+    "./docs/models-sources.md",
+    "./docs/operational_runbook.md",
+    "./docs/testing.md"
+  ]
+}

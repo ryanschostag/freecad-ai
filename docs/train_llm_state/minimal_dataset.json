@@ -1,0 +1,27 @@
+{
+  "model": {
+    "model_id": "trained-freecad-profile",
+    "backend": "llama.cpp",
+    "device": "cpu"
+  },
+  "epochs": 3,
+  "optimizer": {
+    "name": "adamw",
+    "learning_rate": 0.00005
+  },
+  "examples": [
+    {
+      "prompt": "Create a 10x20x30 mm box and export it as STEP.",
+      "response": "Create a new FreeCAD document, add a Part::Box, set Length=10, Width=20, Height=30, recompute the document, and export the solid as STEP."
+    },
+    {
+      "prompt": "Generate a cylinder with radius 5 mm and height 25 mm.",
+      "response": "Create a Part::Cylinder, set Radius=5 and Height=25, then recompute before saving or exporting."
+    }
+  ],
+  "documents": [
+    "Prefer stable object names when creating FreeCAD document objects.",
+    "Always recompute the document before export when geometry changes.",
+    "Use STEP for solid interchange unless the user explicitly requests mesh output."
+  ]
+}
