@@ -12,6 +12,7 @@ from app.db import get_db
 from app.queue import get_queue
 from app.schemas import CreateSessionRequest
 from app.settings import Settings
+from app.storage import get_object_bytes
 from app.utils import upsert_time
 
 router = APIRouter()
@@ -44,6 +45,82 @@ def _load_run_repair_loop_job():
         from worker.jobs import run_repair_loop_job
         return run_repair_loop_job
 
+
+
+def _load_build_session_training_snapshot():
+    try:
+        from worker.session_training import build_session_training_snapshot
+        return build_session_training_snapshot
+    except ModuleNotFoundError as exc:
+        if exc.name != "worker":
+            raise
+
+        import sys
+        from pathlib import Path
+
+        worker_root = Path(__file__).resolve().parents[3] / "freecad-worker"
+        worker_root_str = str(worker_root)
+        if worker_root_str not in sys.path:
+            sys.path.insert(0, worker_root_str)
+
+        from worker.session_training import build_session_training_snapshot
+        return build_session_training_snapshot
+
+
+def _read_training_artifact_text(result_json: dict, kind: str) -> str:
+    for artifact in list(result_json.get("artifacts") or []):
+        if str(artifact.get("kind") or "") != kind:
+            continue
+        key = str(artifact.get("object_key") or "").strip()
+        if not key:
+            continue
+        try:
+            return get_object_bytes(key).decode("utf-8", errors="replace")
+        except Exception:
+            continue
+    return ""
+
+
+def _prepare_session_training_state(db: Session, session: models.DimSession) -> dict:
+    previous_job = (
+        db.query(models.JobRun)
+        .filter(models.JobRun.session_id == session.session_id)
+        .filter(models.JobRun.status == "finished")
+        .order_by(models.JobRun.finished_at.desc())
+        .first()
+    )
+    if previous_job is None:
+        return dict(session.latest_state_json or {})
+
+    result_json = dict(previous_job.result_json or {})
+    if result_json.get("passed", True):
+        return dict(session.latest_state_json or {})
+
+    current_state = dict(session.latest_state_json or {})
+    if current_state.get("source_job_id") == previous_job.job_id:
+        return current_state
+
+    previous_macro_text = _read_training_artifact_text(result_json, "freecad_macro_py")
+    diagnostics_text = _read_training_artifact_text(result_json, "job_diagnostics_json")
+    build_session_training_snapshot = _load_build_session_training_snapshot()
+    snapshot = build_session_training_snapshot(
+        session_id=session.session_id,
+        previous_job_id=previous_job.job_id,
+        previous_prompt=str((result_json or {}).get("prompt") or ""),
+        previous_macro_text=previous_macro_text,
+        diagnostics_text=diagnostics_text,
+        issues=[str(item) for item in (result_json.get("issues") or [])],
+    )
+    session.latest_state_json = {
+        "source_job_id": previous_job.job_id,
+        "run_id": snapshot.run_id,
+        "state_path": str(snapshot.path),
+        "inference_profile": snapshot.inference_profile or {},
+        "manifest": snapshot.manifest or {},
+    }
+    db.commit()
+    db.refresh(session)
+    return dict(session.latest_state_json or {})
 
 
 async def ensure_llm_ready() -> None:
@@ -201,6 +278,8 @@ async def send_message(session_id: str, payload: dict, db: Session = Depends(get
     )
     db.commit()
 
+    session_training_state = _prepare_session_training_state(db, session)
+
     # Resolve runtime settings before any job-path branching.
     settings = Settings()
     timeout_seconds = int(payload.get("timeout_seconds") or settings.default_job_timeout_seconds)
@@ -247,6 +326,7 @@ async def send_message(session_id: str, payload: dict, db: Session = Depends(get
                 tolerance_mm=tolerance_mm,
                 max_repair_iterations=3,
                 timeout_seconds=timeout_seconds,
+                session_training_state=session_training_state,
             )
             finished_at = datetime.now(timezone.utc)
             job_run = db.query(models.JobRun).filter(models.JobRun.job_id == job_id).one()
@@ -285,6 +365,7 @@ async def send_message(session_id: str, payload: dict, db: Session = Depends(get
                 "tolerance_mm": tolerance_mm,
                 "max_repair_iterations": 3,
                 "timeout_seconds": timeout_seconds,
+                "session_training_state": session_training_state,
             },
             job_id=job_id,
             timeout=rq_timeout_seconds,

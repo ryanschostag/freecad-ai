@@ -1,0 +1,35 @@
+import importlib.util
+import json
+from pathlib import Path
+
+
+def _load_module(name: str, relative_path: str):
+    repo_root = Path(__file__).resolve().parents[2]
+    module_path = repo_root / relative_path
+    import sys
+    worker_root = str(repo_root / "services" / "freecad-worker")
+    if worker_root not in sys.path:
+        sys.path.insert(0, worker_root)
+    spec = importlib.util.spec_from_file_location(name, module_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_build_session_training_snapshot_captures_known_failure_lessons(tmp_path):
+    module = _load_module("worker_session_training", "services/freecad-worker/worker/session_training.py")
+    snapshot = module.build_session_training_snapshot(
+        session_id="session-1",
+        previous_job_id="job-1",
+        previous_prompt="create a box",
+        previous_macro_text='if doc.isExportable("BaseBox"):\n    doc.export([], "x.step")',
+        diagnostics_text=json.dumps({"error": "AttributeError: 'App.Document' object has no attribute 'isExportable'"}),
+        issues=["FreeCAD completed but did not produce any model artifacts; runner exception: AttributeError: 'App.Document' object has no attribute 'isExportable'"],
+        state_dir=str(tmp_path),
+    )
+    assert snapshot.run_id == "session-session-1-job-1"
+    assert snapshot.inference_profile is not None
+    rendered = json.dumps(snapshot.inference_profile)
+    assert "Do not call doc.isExportable" in rendered
+    assert "Do not call doc.export" in rendered

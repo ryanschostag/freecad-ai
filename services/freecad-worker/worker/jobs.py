@@ -271,6 +271,7 @@ def run_repair_loop_job(
     tolerance_mm: float | None = None,
     max_repair_iterations: int = 3,
     timeout_seconds: int = 300,
+    session_training_state: dict | None = None,
 ):
     """RQ entrypoint executed by the freecad-worker container."""
 
@@ -295,7 +296,7 @@ def run_repair_loop_job(
     messages = [
         {
             "role": "system",
-            "content": "You are a CAD assistant. Output ONLY valid Python code for a FreeCAD macro. Do not wrap in markdown fences. Do not include explanations.",
+            "content": "You are a CAD assistant. Output ONLY valid Python code for a FreeCAD macro. Do not wrap in markdown fences. Do not include explanations. Do not call doc.isExportable(...), doc.export(...), Import.export(...), or Mesh.export(...) from the generated macro; the worker exports artifacts after the macro leaves final Part::Feature objects in the document.",
         },
         {
             "role": "user",
@@ -343,6 +344,7 @@ def run_repair_loop_job(
                 timeout_s=float(llm_budget["timeout_s"]),
                 max_attempts=int(llm_budget["max_attempts"]),
                 stop=["<|im_end|>", "</s>", "<|endoftext|>"],
+                session_inference_profile=(session_training_state or {}).get("inference_profile"),
             )
         except Exception as exc:
             placeholder_reason = f"llm request failed: {type(exc).__name__}: {exc}"
@@ -589,6 +591,7 @@ def run_repair_loop_job(
         "runner_status": runner_status,
         "exported_model_object_keys": exported_model_object_keys,
         "probable_truncation": probable_truncation,
+        "session_training_state": session_training_state or {},
     }
     diag_key = f"sessions/{session_id}/diagnostics/{user_message_id}.diagnostics.json"
     artifacts.append(
@@ -615,6 +618,7 @@ def run_repair_loop_job(
         "job_id": job_id,
         "session_id": session_id,
         "user_message_id": user_message_id,
+        "prompt": prompt,
         "passed": not bool(issues),
         "iterations": len(generation_attempts) or 1,
         "issues": issues,
@@ -787,6 +791,9 @@ def main():
     except SystemExit as e:
         print("VALIDATION:EXEC_SYSTEM_EXIT:" + str(getattr(e, "code", 0)))
         status["system_exit"] = getattr(e, "code", 0)
+    except Exception as e:
+        print("VALIDATION:EXEC_EXCEPTION:" + str(e))
+        status["exception"] = traceback.format_exc()
 
     for doc in _all_documents():
         try:

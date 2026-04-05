@@ -142,12 +142,43 @@ def _sanitize_stop_sequences(stop: list[str] | None) -> list[str] | None:
 
 
 
-def _inject_persisted_training_profile(messages: list[dict[str, str]]) -> list[dict[str, str]]:
+def _profile_to_system_message(profile: dict[str, Any] | None) -> str:
+    if not profile:
+        return ""
+
+    parts: list[str] = []
+    system_message = str(profile.get("system_message") or "").strip()
+    if system_message:
+        parts.append(system_message)
+
+    examples = profile.get("examples") or []
+    if isinstance(examples, list) and examples:
+        rendered_examples: list[str] = []
+        for item in examples[:3]:
+            if not isinstance(item, dict):
+                continue
+            prompt = str(item.get("prompt") or "").strip()
+            response = str(item.get("response") or "").strip()
+            if prompt and response:
+                rendered_examples.append(f"Example user request: {prompt}\nExample assistant response pattern: {response}")
+        if rendered_examples:
+            parts.append("Persisted training examples:\n" + "\n\n".join(rendered_examples))
+
+    snippets = profile.get("retrieval_snippets") or []
+    if isinstance(snippets, list) and snippets:
+        excerpt = [str(item).strip() for item in snippets[:2] if str(item).strip()]
+        if excerpt:
+            parts.append("Persisted retrieval snippets:\n" + "\n---\n".join(excerpt))
+
+    return "\n\n".join(parts).strip()
+
+
+def _inject_persisted_training_profile(messages: list[dict[str, str]], session_inference_profile: dict[str, Any] | None = None) -> list[dict[str, str]]:
     snapshot = load_latest_snapshot(settings.llm_state_dir)
-    if snapshot is None or not snapshot.inference_profile:
+    profile = session_inference_profile or (snapshot.inference_profile if snapshot is not None else None)
+    if not profile:
         return messages
 
-    profile = snapshot.inference_profile
     parts: list[str] = []
     system_message = str(profile.get("system_message") or "").strip()
     if system_message:
@@ -189,6 +220,7 @@ def chat(
     timeout_s: float | None = None,
     max_attempts: int | None = None,
     stop: list[str] | None = None,
+    session_inference_profile: dict[str, Any] | None = None,
 ) -> str:
     """Uses an OpenAI-compatible chat endpoint.
 
@@ -206,7 +238,7 @@ def chat(
     """
     url = settings.llm_base_url.rstrip("/")
     endpoint = url + "/v1/chat/completions"
-    effective_messages = _inject_persisted_training_profile(messages)
+    effective_messages = _inject_persisted_training_profile(messages, session_inference_profile=session_inference_profile)
     payload = {
         "model": settings.llm_model or "local-model",
         "messages": effective_messages,
