@@ -201,12 +201,14 @@ async def send_message(session_id: str, payload: dict, db: Session = Depends(get
     )
     db.commit()
 
+    # Resolve runtime settings before any job-path branching.
+    settings = Settings()
+    timeout_seconds = int(payload.get("timeout_seconds") or settings.default_job_timeout_seconds)
+    rq_timeout_seconds = int(timeout_seconds + settings.job_timeout_buffer_seconds)
+
     # Gate job enqueue on LLM readiness so clients fail fast instead of hanging.
     await ensure_llm_ready()
 
-    settings = Settings()
-    timeout_seconds = int(payload.get("timeout_seconds") or settings.default_job_timeout_seconds)
-    rq_timeout_seconds = timeout_seconds + settings.job_timeout_buffer_seconds
 
     job_id = str(uuid.uuid4())
 

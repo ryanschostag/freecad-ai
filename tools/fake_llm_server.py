@@ -28,7 +28,6 @@ class ChatCompletionRequest(BaseModel):
     model: Optional[str] = None
     messages: List[ChatCompletionMessage]
     temperature: Optional[float] = None
-    max_tokens: Optional[int] = None
 
 
 @app.post("/v1/chat/completions")

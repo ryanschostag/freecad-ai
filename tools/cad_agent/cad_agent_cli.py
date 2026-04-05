@@ -395,6 +395,25 @@ def _zip_tree(src_dir: Path, out_file: Path) -> None:
                 zf.write(path, path.relative_to(src_dir))
 
 
+
+
+def _extract_prompt_and_config_from_logs(logs: dict[str, Any]) -> tuple[str | None, dict[str, Any] | None]:
+    events = logs.get("events") if isinstance(logs, dict) else None
+    if not isinstance(events, list):
+        return None, None
+    for event in reversed(events):
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") != "message.user":
+            continue
+        payload = event.get("payload") or {}
+        if not isinstance(payload, dict):
+            continue
+        prompt = payload.get("prompt")
+        cfg = {k: payload.get(k) for k in ("mode", "export", "units", "tolerance_mm", "timeout_seconds") if k in payload}
+        return (str(prompt) if prompt is not None else None), cfg
+    return None, None
+
 def cmd_job_diagnose(client: ApiClient, args: argparse.Namespace) -> int:
     out_zip = Path(args.out)
     with tempfile.TemporaryDirectory(prefix="cad-agent-diagnose-") as tmp:
@@ -414,6 +433,11 @@ def cmd_job_diagnose(client: ApiClient, args: argparse.Namespace) -> int:
         (root / "session_logs.json").write_text(_json_dumps(logs) + "\n", encoding="utf-8")
         if logs_code != 200:
             return 1
+        prompt_text, request_config = _extract_prompt_and_config_from_logs(logs if isinstance(logs, dict) else {})
+        if prompt_text is not None:
+            (root / "prompt.txt").write_text(prompt_text + ("\n" if not prompt_text.endswith("\n") else ""), encoding="utf-8")
+        if request_config is not None:
+            (root / "request_config.json").write_text(_json_dumps(request_config) + "\n", encoding="utf-8")
 
         arts_manifest = _download_session_artifacts(client, session_id, root / "artifacts")
         (root / "artifacts_manifest.json").write_text(_json_dumps(arts_manifest) + "\n", encoding="utf-8")
@@ -423,6 +447,8 @@ def cmd_job_diagnose(client: ApiClient, args: argparse.Namespace) -> int:
 
         downloaded = arts_manifest.get("downloaded", [])
         summary = {
+            "has_prompt_file": (root / "prompt.txt").exists(),
+            "has_request_config_file": (root / "request_config.json").exists(),
             "job_id": args.job_id,
             "session_id": session_id,
             "artifact_count": len(downloaded),

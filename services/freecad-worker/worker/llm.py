@@ -57,14 +57,21 @@ def _extract_text(value: Any) -> str:
 
 def _strip_code_fences(text: str) -> str:
     s = text.strip()
-    if not s.startswith("```"):
+    if not s:
         return s
-    lines = s.splitlines()
-    if len(lines) >= 2 and lines[-1].strip() == "```":
-        body = lines[1:-1]
-        if body and body[0].strip().lower() in {"python", "py"}:
-            body = body[1:]
-        return "\n".join(body).strip()
+
+    # Handle the common case where the model starts with a fenced code block,
+    # including incomplete or truncated responses that start with a markdown fence
+    # emit the closing fence before generation stops.
+    if s.startswith("```"):
+        s = re.sub(r"^```[\t ]*[A-Za-z0-9_+-]*\r?\n?", "", s, count=1)
+        s = s.strip()
+
+    # Remove a trailing closing fence even when the opening fence was already
+    # stripped or the model emitted only the closing delimiter.
+    s = re.sub(r"\r?\n```\s*$", "", s).strip()
+    if s == "```":
+        return ""
     return s
 
 
@@ -135,7 +142,6 @@ def _sanitize_stop_sequences(stop: list[str] | None) -> list[str] | None:
 def chat(
     messages: list[dict[str, str]],
     temperature: float = 0.1,
-    max_tokens: int = 1200,
     *,
     timeout_s: float | None = None,
     max_attempts: int | None = None,
@@ -161,7 +167,6 @@ def chat(
         "model": settings.llm_model or "local-model",
         "messages": messages,
         "temperature": temperature,
-        "max_tokens": max_tokens,
     }
     sanitized_stop = _sanitize_stop_sequences(stop)
     if sanitized_stop:
@@ -198,7 +203,7 @@ def chat(
                 # /completion endpoint before declaring the response empty.
                 completion_payload = {
                     "prompt": _messages_to_prompt(messages),
-                    "n_predict": max_tokens,
+                    "n_predict": -1,
                     "temperature": temperature,
                     "stop": sanitized_stop or ["<|im_end|>", "</s>", "<|endoftext|>"],
                 }

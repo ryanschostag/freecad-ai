@@ -13,21 +13,23 @@ def _load_jobs_module():
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
-    spec.loader.exec_module(module)  # type: ignore[assignment]
+    spec.loader.exec_module(module)
     return module
 
 
-def test_llm_generation_budget_stays_within_job_timeout():
+def test_llm_runtime_budget_stays_within_job_timeout():
     jobs = _load_jobs_module()
 
-    budget = jobs._llm_generation_budget(900)
+    budget = jobs._llm_runtime_budget(900, prompt_tokens=200)
 
     assert budget["max_attempts"] == 1
-    assert budget["max_tokens"] == 400
+    assert budget["ctx_size"] == 4096
+    assert budget["available_completion_tokens"] > 0
+    assert budget["cap_reason"] == "context_window"
     assert 30 <= budget["timeout_s"] < 900
 
 
-def test_run_repair_loop_job_uses_bounded_llm_budget(monkeypatch):
+def test_run_repair_loop_job_uses_context_aware_llm_budget_without_token_cap(monkeypatch):
     jobs = _load_jobs_module()
 
     uploads = []
@@ -56,7 +58,16 @@ def test_run_repair_loop_job_uses_bounded_llm_budget(monkeypatch):
 
     assert result["passed"] is True
     assert seen["max_attempts"] == 1
-    assert seen["max_tokens"] == 400
     assert seen["timeout_s"] < 900
     assert seen["stop"] == ["<|im_end|>", "</s>", "<|endoftext|>"]
+    assert "max_tokens" not in seen
     assert uploads
+
+
+def test_llm_runtime_budget_uses_context_window_without_app_side_token_request():
+    jobs = _load_jobs_module()
+
+    budget = jobs._llm_runtime_budget(900, prompt_tokens=1500, ctx_size=4096)
+
+    assert budget["available_completion_tokens"] == 2340
+    assert budget["cap_reason"] == "context_window"

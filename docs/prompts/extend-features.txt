@@ -2,6 +2,7 @@ I would like you to expand the following features:
 
 1. 
 
+- you are an FreeCAD AI expert: Study and learn everything about using the attached files.
 - attached is the latest committed code (zip)
 - provide new code in zip file download
 - provide clear instructions
