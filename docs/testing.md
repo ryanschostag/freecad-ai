@@ -140,3 +140,11 @@ The override file prevents accidental use of host AWS credentials.
 - The `test` profile must be used
 - The override file is required to keep MinIO credentials consistent
 - `test-runner` is the preferred way to execute pytest
+
+## Persisted LLM state regression coverage
+
+Unit tests now verify that:
+
+- Docker Compose mounts the configurable `LLM_STATE_DIR` volume into API, worker, and test-runner containers.
+- The training pipeline writes the expected persisted files under `data/llm/state`.
+- The worker loads the latest persisted inference profile and injects it into LLM requests.

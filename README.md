@@ -38,6 +38,51 @@ Key variables used across profiles:
 
 ---
 
+## Persisted LLM training state
+
+The stack now supports a host-mounted LLM state directory so reusable training state survives container rebuilds.
+
+- Default host path: `./data/llm/state`
+- Default container path: `/data/llm/state`
+- Override with `.env` values: `LLM_STATE_HOST_DIR` and `LLM_STATE_DIR`
+
+Each training run writes a timestamped state bundle containing:
+
+- `manifest.json`
+- `checkpoint.json`
+- `weights.json`
+- `lora_adapter.json`
+- `optimizer_state.json`
+- `embedding_index.json`
+- `inference_profile.json`
+- `latest.json` pointer in the state root
+
+### Training pipeline
+
+Use the new repository tool to generate a reusable state bundle:
+
+```bash
+python tools/train_llm_state.py --dataset path/to/training_dataset.json
+```
+
+Example dataset shape:
+
+```json
+{
+  "model": {"model_id": "trained-freecad", "backend": "llama.cpp", "device": "cpu"},
+  "examples": [
+    {"prompt": "make a box", "response": "Create a document and add Part::Box."}
+  ],
+  "documents": [
+    "Prefer STEP exports and stable object names."
+  ]
+}
+```
+
+The worker automatically loads the latest persisted `inference_profile.json` and injects it as a system instruction for later reuse.
+
+---
+
 ## Object Storage (MinIO)
 
 Artifacts (macros, validation reports, exports) are stored in S3-compatible object storage.

@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 
 from worker.settings import settings
+from worker.model_state import load_latest_snapshot
 
 
 def _env_float(name: str, default: float) -> float:
@@ -139,6 +140,48 @@ def _sanitize_stop_sequences(stop: list[str] | None) -> list[str] | None:
     return sanitized or None
 
 
+
+
+def _inject_persisted_training_profile(messages: list[dict[str, str]]) -> list[dict[str, str]]:
+    snapshot = load_latest_snapshot(settings.llm_state_dir)
+    if snapshot is None or not snapshot.inference_profile:
+        return messages
+
+    profile = snapshot.inference_profile
+    parts: list[str] = []
+    system_message = str(profile.get("system_message") or "").strip()
+    if system_message:
+        parts.append(system_message)
+
+    examples = profile.get("examples") or []
+    if isinstance(examples, list) and examples:
+        rendered_examples: list[str] = []
+        for item in examples[:3]:
+            if not isinstance(item, dict):
+                continue
+            prompt = str(item.get("prompt") or "").strip()
+            response = str(item.get("response") or "").strip()
+            if prompt and response:
+                rendered_examples.append(f"Example user request: {prompt}\nExample assistant response pattern: {response}")
+        if rendered_examples:
+            parts.append("Persisted training examples:\n" + "\n\n".join(rendered_examples))
+
+    snippets = profile.get("retrieval_snippets") or []
+    if isinstance(snippets, list) and snippets:
+        excerpt = [str(item).strip() for item in snippets[:2] if str(item).strip()]
+        if excerpt:
+            parts.append("Persisted retrieval snippets:\n" + "\n---\n".join(excerpt))
+
+    if not parts:
+        return messages
+
+    injected = {"role": "system", "content": "\n\n".join(parts)}
+    if messages and messages[0].get("role") == "system":
+        merged = dict(messages[0])
+        merged["content"] = f"{injected['content']}\n\n{messages[0].get('content', '')}".strip()
+        return [merged, *messages[1:]]
+    return [injected, *messages]
+
 def chat(
     messages: list[dict[str, str]],
     temperature: float = 0.1,
@@ -163,9 +206,10 @@ def chat(
     """
     url = settings.llm_base_url.rstrip("/")
     endpoint = url + "/v1/chat/completions"
+    effective_messages = _inject_persisted_training_profile(messages)
     payload = {
         "model": settings.llm_model or "local-model",
-        "messages": messages,
+        "messages": effective_messages,
         "temperature": temperature,
     }
     sanitized_stop = _sanitize_stop_sequences(stop)
@@ -202,7 +246,7 @@ def chat(
                 # or otherwise unusual OpenAI-compatible payload shape. Fall back to the native
                 # /completion endpoint before declaring the response empty.
                 completion_payload = {
-                    "prompt": _messages_to_prompt(messages),
+                    "prompt": _messages_to_prompt(effective_messages),
                     "n_predict": -1,
                     "temperature": temperature,
                     "stop": sanitized_stop or ["<|im_end|>", "</s>", "<|endoftext|>"],

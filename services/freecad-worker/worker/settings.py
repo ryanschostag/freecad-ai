@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     llm_ctx_size: int = int(os.getenv('LLM_CTX_SIZE', '4096'))
     llm_ctx_reserve_tokens: int = int(os.getenv('LLM_CTX_RESERVE_TOKENS', '256'))
 
+    # Persisted LLM training state mounted from the host for reuse across rebuilds.
+    llm_state_dir: str = os.getenv('LLM_STATE_DIR', '/data/llm/state')
+
     # API used for internal callbacks (persist job status/results outside Redis)
     api_base_url: str = os.getenv('API_BASE_URL', 'http://api:8080')
 
