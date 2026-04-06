@@ -1,7 +1,4 @@
 #!/bin/bash
+set -euo pipefail
 
-zip -v9 build.zip *.log
-
-rm -f *.log
-
-
+python tools/collect_logs.py

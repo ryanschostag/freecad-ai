@@ -15,3 +15,4 @@ models/
 artifacts_staging/
 *.log
 .venv/
+data/
