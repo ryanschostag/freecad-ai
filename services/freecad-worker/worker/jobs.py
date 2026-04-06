@@ -13,6 +13,7 @@ from worker.llm import chat, _normalize_generated_text
 from worker.storage import put_object
 from worker.settings import settings
 from worker.prompts import build_compact_generate_prompt, build_compact_retry_prompt
+from worker.session_training import persist_iteration_training_snapshot
 
 
 def _sha256_bytes(data: bytes) -> str:
@@ -259,6 +260,58 @@ def _repair_prompt_for_missing_artifacts(candidate: str, stdout: str, stderr: st
     )
 
 
+def _repair_prompt_for_runner_failure(candidate: str, *, failure: str, stdout: str, stderr: str, runner_status: dict | None) -> str:
+    runner_exception = ""
+    runner_reason = ""
+    if runner_status:
+        runner_exception = str(runner_status.get("exception") or "").strip()
+        runner_reason = str(runner_status.get("reason") or "").strip()
+    return (
+        "The previous macro failed when executed by the worker in FreeCAD. "
+        "Return a repaired, complete FreeCAD macro. Output ONLY valid Python code. "
+        "Do not include markdown fences or explanations. "
+        "The macro must run both in headless FreeCADCmd and when launched from FreeCAD 1.0.x via Macros -> Execute.\n\n"
+        f"Failure summary: {failure}\n\n"
+        f"Runner exception / traceback:\n{runner_exception[:4000]}\n\n"
+        f"Runner reason:\n{runner_reason[:1000]}\n\n"
+        f"STDOUT:\n{stdout[:2000]}\n\n"
+        f"STDERR:\n{stderr[:2000]}\n\n"
+        "Previous macro:\n"
+        f"{candidate}"
+    )
+
+
+def _persist_retry_training_state(*, session_id: str, job_id: str, iteration: int, prompt: str, macro_code: str, detail: str, stdout: str = "", stderr: str = "", runner_status: dict | None = None, current_state: dict | None = None) -> dict:
+    diagnostics_parts = [detail]
+    if stdout:
+        diagnostics_parts.append("STDOUT:\n" + stdout[:4000])
+    if stderr:
+        diagnostics_parts.append("STDERR:\n" + stderr[:4000])
+    if runner_status:
+        diagnostics_parts.append("RUNNER_STATUS:\n" + json.dumps(runner_status, indent=2, sort_keys=True))
+    try:
+        snapshot = persist_iteration_training_snapshot(
+            session_id=session_id,
+            job_id=job_id,
+            iteration=iteration,
+            previous_prompt=prompt,
+            previous_macro_text=macro_code,
+            diagnostics_text="\n\n".join(part for part in diagnostics_parts if part),
+            issues=[detail],
+            state_dir=settings.llm_state_dir,
+        )
+    except Exception as exc:  # pragma: no cover
+        print(f"WARN: failed to persist retry training state for {job_id} iteration {iteration}: {type(exc).__name__}: {exc}")
+        return dict(current_state or {})
+    return {
+        "source_job_id": job_id,
+        "run_id": snapshot.run_id,
+        "state_path": str(snapshot.path),
+        "inference_profile": snapshot.inference_profile or {},
+        "manifest": snapshot.manifest or {},
+    }
+
+
 def run_repair_loop_job(
     *,
     job_id: str,
@@ -296,7 +349,7 @@ def run_repair_loop_job(
     messages = [
         {
             "role": "system",
-            "content": "You are a CAD assistant. Output ONLY valid Python code for a FreeCAD macro. Do not wrap in markdown fences. Do not include explanations. Do not call doc.isExportable(...), doc.export(...), Import.export(...), or Mesh.export(...) from the generated macro; the worker exports artifacts after the macro leaves final Part::Feature objects in the document.",
+            "content": "You are a CAD assistant. Output ONLY valid Python code for a FreeCAD macro. Do not wrap in markdown fences. Do not include explanations. The macro must run both in headless FreeCADCmd and in the FreeCAD 1.0.x macro UI. Use App.ActiveDocument safely and only call App.getDocument('Model') when that document already exists. Use FreeCAD.Vector/App.Vector instead of Python tuples when a Base.Vector is required. Create each requested component as a separate named Part::Feature object when the prompt asks for separately manufacturable parts. Do not call doc.isExportable(...), doc.export(...), Import.export(...), or Mesh.export(...) from the generated macro; the worker exports artifacts after the macro leaves final Part::Feature objects in the document.",
         },
         {
             "role": "user",
@@ -386,6 +439,15 @@ def run_repair_loop_job(
             macro_code = candidate
             model_export_skipped_reason = "generated macro is not valid Python"
             _mark_job_retrying(job_id=job_id, retry_count=iteration, reason=syntax_error)
+            session_training_state = _persist_retry_training_state(
+                session_id=session_id,
+                job_id=job_id,
+                iteration=iteration,
+                prompt=prompt,
+                macro_code=candidate,
+                detail=syntax_error,
+                current_state=session_training_state,
+            )
             print(json.dumps({"status": "retrying", "retry-count": iteration, "reason": syntax_error}))
             if iteration >= max_iterations:
                 issues.append(f"generated macro is not valid Python after {iteration} attempt(s): {syntax_error}")
@@ -411,6 +473,15 @@ def run_repair_loop_job(
             macro_code = candidate
             model_export_skipped_reason = validation_error
             _mark_job_retrying(job_id=job_id, retry_count=iteration, reason=validation_error)
+            session_training_state = _persist_retry_training_state(
+                session_id=session_id,
+                job_id=job_id,
+                iteration=iteration,
+                prompt=prompt,
+                macro_code=candidate,
+                detail=validation_error,
+                current_state=session_training_state,
+            )
             print(json.dumps({"status": "retrying", "retry-count": iteration, "reason": validation_error}))
             if iteration >= max_iterations:
                 issues.append(f"generated macro failed validation after {iteration} attempt(s): {validation_error}")
@@ -483,6 +554,15 @@ def run_repair_loop_job(
                     issues.append(model_export_skipped_reason)
                     break
                 _mark_job_retrying(job_id=job_id, retry_count=iteration, reason=model_export_skipped_reason)
+                session_training_state = _persist_retry_training_state(
+                    session_id=session_id,
+                    job_id=job_id,
+                    iteration=iteration,
+                    prompt=prompt,
+                    macro_code=candidate,
+                    detail=model_export_skipped_reason,
+                    current_state=session_training_state,
+                )
                 print(json.dumps({"status": "retrying", "retry-count": iteration, "reason": model_export_skipped_reason}))
                 messages = [messages[0], {"role": "user", "content": _repair_prompt_for_failed_execution(candidate, model_export_skipped_reason)}]
                 continue
@@ -504,8 +584,20 @@ def run_repair_loop_job(
                 if iteration >= max_iterations:
                     issues.append(model_export_skipped_reason)
                     break
+                session_training_state = _persist_retry_training_state(
+                    session_id=session_id,
+                    job_id=job_id,
+                    iteration=iteration,
+                    prompt=prompt,
+                    macro_code=candidate,
+                    detail=model_export_skipped_reason,
+                    stdout=model_export_stdout,
+                    stderr=model_export_stderr,
+                    runner_status=runner_status,
+                    current_state=session_training_state,
+                )
                 print(json.dumps({"status": "retrying", "retry-count": iteration, "reason": model_export_skipped_reason}))
-                messages = [messages[0], {"role": "user", "content": _repair_prompt_for_nonzero_exit(candidate, model_export_stdout, model_export_stderr)}]
+                messages = [messages[0], {"role": "user", "content": _repair_prompt_for_runner_failure(candidate, failure=model_export_skipped_reason, stdout=model_export_stdout, stderr=model_export_stderr, runner_status=runner_status)}]
                 continue
 
             model_artifacts = _upload_generated_model_artifacts(
@@ -545,7 +637,19 @@ def run_repair_loop_job(
             if iteration >= max_iterations:
                 issues.append(model_export_skipped_reason)
                 break
-            no_artifact_failure = _repair_prompt_for_missing_artifacts(candidate, model_export_stdout, model_export_stderr)
+            session_training_state = _persist_retry_training_state(
+                session_id=session_id,
+                job_id=job_id,
+                iteration=iteration,
+                prompt=prompt,
+                macro_code=candidate,
+                detail=model_export_skipped_reason,
+                stdout=model_export_stdout,
+                stderr=model_export_stderr,
+                runner_status=runner_status,
+                current_state=session_training_state,
+            )
+            no_artifact_failure = _repair_prompt_for_runner_failure(candidate, failure=model_export_skipped_reason, stdout=model_export_stdout, stderr=model_export_stderr, runner_status=runner_status)
             print(json.dumps({"status": "retrying", "retry-count": iteration, "reason": model_export_skipped_reason}))
             messages = [messages[0], {"role": "user", "content": no_artifact_failure}]
 
@@ -783,7 +887,24 @@ def main():
         print("VALIDATION:CHDIR_FAILED:" + str(e))
         status["chdir_failed"] = str(e)
 
+    try:
+        model_doc = App.getDocument("Model")
+    except Exception:
+        model_doc = None
+    if model_doc is None:
+        try:
+            model_doc = App.newDocument("Model")
+        except Exception as e:
+            status["model_document_error"] = str(e)
+    try:
+        if getattr(App, "ActiveDocument", None) is None and model_doc is not None:
+            App.setActiveDocument(model_doc.Name)
+    except Exception:
+        pass
+
     g = {"App": App, "FreeCAD": App, "Part": Part}
+    if model_doc is not None:
+        g["doc"] = model_doc
     with open(macro_path, "r", encoding="utf-8") as f:
         code = f.read()
     try:

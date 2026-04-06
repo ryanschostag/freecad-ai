@@ -33,3 +33,28 @@ def test_build_session_training_snapshot_captures_known_failure_lessons(tmp_path
     rendered = json.dumps(snapshot.inference_profile)
     assert "Do not call doc.isExportable" in rendered
     assert "Do not call doc.export" in rendered
+
+
+def test_iteration_training_snapshot_captures_ui_macro_failures_and_writes_latest(tmp_path):
+    module = _load_module("worker_session_training_iter", "services/freecad-worker/worker/session_training.py")
+    snapshot = module.persist_iteration_training_snapshot(
+        session_id="session-1",
+        job_id="job-99",
+        iteration=2,
+        previous_prompt="create a razor with separated parts",
+        previous_macro_text="doc = FreeCAD.getDocument('Model')\nhandle_spacer = Part.makeBox(handle_width, handle_length, handle_height, handle_spacer_center, handle_spacer_axis)",
+        diagnostics_text=(
+            "<class 'NameError'>: Unknown document 'Model'\n"
+            "<class 'NameError'>: name 'handle_width' is not defined\n"
+            "<class 'TypeError'>: argument 3 must be Base.Vector, not tuple"
+        ),
+        issues=["ui macro execution failed"],
+        state_dir=str(tmp_path),
+    )
+    latest = json.loads((tmp_path / "latest.json").read_text(encoding="utf-8"))
+    rendered = json.dumps(snapshot.inference_profile)
+    assert latest["run_id"] == snapshot.run_id
+    assert snapshot.run_id == "session-session-1-job-99-iter-2"
+    assert "Never call App.getDocument('Model') unless that document already exists" in rendered
+    assert "Do not reference undefined variables" in rendered
+    assert "pass FreeCAD.Vector instances instead of Python tuples" in rendered

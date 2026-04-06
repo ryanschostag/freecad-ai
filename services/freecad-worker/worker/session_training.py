@@ -25,9 +25,25 @@ def _extract_lessons(*, previous_prompt: str, previous_macro: str, diagnostics_t
         lessons.append(
             "Do not call Mesh.export(...) from the generated macro. The worker performs STL export after the macro finishes."
         )
-    if "argument 3 must be Base.Vector" in combined:
+    if "argument 3 must be Base.Vector" in combined or "must be Base.Vector, not tuple" in combined:
         lessons.append(
             "When constructing Part geometry, pass FreeCAD.Vector instances instead of Python tuples wherever FreeCAD expects a Base.Vector."
+        )
+    if "Unknown document 'Model'" in combined:
+        lessons.append(
+            "Never call App.getDocument('Model') unless that document already exists. Prefer doc = App.ActiveDocument; if doc is None: doc = App.newDocument('Model')."
+        )
+    if re.findall(r"name '([^']+)' is not defined", combined):
+        lessons.append(
+            "Do not reference undefined variables. Define every dimension variable once and use consistent names throughout the macro, especially for handle, blade, housing, and spacer dimensions."
+        )
+    if "creation of box failed" in combined:
+        lessons.append(
+            "Clamp every box and cylinder dimension to a safe positive value before creating geometry."
+        )
+    if previous_prompt.strip():
+        lessons.append(
+            "Create each requested physical part as its own Part::Feature object in the document so the handle, blade, housing, spacers, and screw all survive export as separate solids."
         )
     if issues:
         lessons.append("Previous run issues to avoid:\n- " + "\n- ".join(str(item) for item in issues if str(item).strip()))
@@ -38,10 +54,11 @@ def _extract_lessons(*, previous_prompt: str, previous_macro: str, diagnostics_t
     return lessons
 
 
-def build_session_training_snapshot(
+def _persist_snapshot(
     *,
     session_id: str,
-    previous_job_id: str,
+    source_id: str,
+    source: str,
     previous_prompt: str,
     previous_macro_text: str,
     diagnostics_text: str,
@@ -63,13 +80,13 @@ def build_session_training_snapshot(
             }
         )
 
-    run_id = f"session-{session_id}-{previous_job_id}"
+    run_id = f"session-{session_id}-{source_id}"
     manifest = {
         "format_version": 1,
         "run_id": run_id,
-        "source": "session_failure_feedback",
+        "source": source,
         "session_id": session_id,
-        "previous_job_id": previous_job_id,
+        "source_id": source_id,
         "training_summary": {"examples": len(examples), "documents": len(lessons)},
         "model": {"model_id": "session-feedback", "backend": "metadata-profile", "device": "cpu"},
     }
@@ -81,6 +98,7 @@ def build_session_training_snapshot(
     inference_profile["system_message"] = (
         "Use the session failure feedback when it is relevant. "
         "Do not repeat APIs or geometry patterns that failed earlier in this same session. "
+        "Ensure every requested part is created as a named Part::Feature object and that document handling works both headless and from the FreeCAD macro UI. "
         + str(inference_profile.get("system_message") or "")
     ).strip()
 
@@ -93,7 +111,7 @@ def build_session_training_snapshot(
             "format_version": 1,
             "run_id": run_id,
             "status": "completed",
-            "source": "session_failure_feedback",
+            "source": source,
         },
         optimizer_payload={
             "format_version": 1,
@@ -118,4 +136,49 @@ def build_session_training_snapshot(
                 for idx, text in enumerate(lessons)
             ],
         },
+    )
+
+
+def build_session_training_snapshot(
+    *,
+    session_id: str,
+    previous_job_id: str,
+    previous_prompt: str,
+    previous_macro_text: str,
+    diagnostics_text: str,
+    issues: list[str],
+    state_dir: str | None = None,
+) -> model_state.StateSnapshot:
+    return _persist_snapshot(
+        session_id=session_id,
+        source_id=previous_job_id,
+        source="session_failure_feedback",
+        previous_prompt=previous_prompt,
+        previous_macro_text=previous_macro_text,
+        diagnostics_text=diagnostics_text,
+        issues=issues,
+        state_dir=state_dir,
+    )
+
+
+def persist_iteration_training_snapshot(
+    *,
+    session_id: str,
+    job_id: str,
+    iteration: int,
+    previous_prompt: str,
+    previous_macro_text: str,
+    diagnostics_text: str,
+    issues: list[str],
+    state_dir: str | None = None,
+) -> model_state.StateSnapshot:
+    return _persist_snapshot(
+        session_id=session_id,
+        source_id=f"{job_id}-iter-{int(iteration)}",
+        source="session_retry_feedback",
+        previous_prompt=previous_prompt,
+        previous_macro_text=previous_macro_text,
+        diagnostics_text=diagnostics_text,
+        issues=issues,
+        state_dir=state_dir,
     )
