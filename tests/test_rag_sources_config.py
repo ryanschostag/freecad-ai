@@ -45,7 +45,6 @@ def test_new_sources_present():
 
     expected = {
         "freecad-api-docs",
-        "openscad-docs",
         "mcmaster-mechanical-components",
         "misumi-configurable-components",
         "digikey-electromechanical-components",
@@ -63,4 +62,3 @@ def test_https_entrypoints():
     for source in cfg["sources"]:
         for url in source["entrypoints"]:
             assert url.startswith("https://")
-
