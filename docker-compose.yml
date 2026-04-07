@@ -19,6 +19,7 @@ services:
     - MODEL_BACKEND=llama.cpp
     - MODEL_DEVICE=cpu
     - LLM_STATE_DIR=${LLM_STATE_DIR:-/data/llm/state}
+    - LLM_ERROR_RETRY_LIMIT=${LLM_ERROR_RETRY_LIMIT:-3}
     - STORAGE_MODE=minio
     - S3_ENDPOINT=http://minio:9000
     - S3_ACCESS_KEY=${S3_ACCESS_KEY:-${MINIO_ROOT_USER:-minioadmin}}
@@ -60,6 +61,7 @@ services:
     - MODEL_BACKEND=fake-llm
     - MODEL_DEVICE=cpu
     - LLM_STATE_DIR=${LLM_STATE_DIR:-/data/llm/state}
+    - LLM_ERROR_RETRY_LIMIT=${LLM_ERROR_RETRY_LIMIT:-3}
     - CAD_AGENT_INLINE_JOBS=1
     volumes:
     - artifacts_staging:/artifacts_staging
@@ -91,6 +93,7 @@ services:
     - MODEL_BACKEND=fake-llm
     - MODEL_DEVICE=cpu
     - LLM_STATE_DIR=${LLM_STATE_DIR:-/data/llm/state}
+    - LLM_ERROR_RETRY_LIMIT=${LLM_ERROR_RETRY_LIMIT:-3}
     - CAD_AGENT_INLINE_JOBS=1
     volumes:
     - ./:/repo
@@ -232,6 +235,7 @@ services:
     - MODEL_BACKEND=llama.cpp
     - MODEL_DEVICE=cpu
     - LLM_STATE_DIR=${LLM_STATE_DIR:-/data/llm/state}
+    - LLM_ERROR_RETRY_LIMIT=${LLM_ERROR_RETRY_LIMIT:-3}
     - S3_ENDPOINT=http://minio:9000
     - S3_ACCESS_KEY=${S3_ACCESS_KEY:-${MINIO_ROOT_USER:-minioadmin}}
     - S3_SECRET_KEY=${S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD:-minioadmin}}
@@ -262,6 +266,7 @@ services:
     - MODEL_BACKEND=fake-llm
     - MODEL_DEVICE=cpu
     - LLM_STATE_DIR=${LLM_STATE_DIR:-/data/llm/state}
+    - LLM_ERROR_RETRY_LIMIT=${LLM_ERROR_RETRY_LIMIT:-3}
     - S3_ENDPOINT=http://minio:9000
     - S3_ACCESS_KEY=${S3_ACCESS_KEY:-${MINIO_ROOT_USER:-minioadmin}}
     - S3_SECRET_KEY=${S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD:-minioadmin}}

@@ -1,4 +1,5 @@
 import os
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
@@ -25,6 +26,12 @@ class Settings(BaseSettings):
 
     # Persisted LLM training state mounted from the host for reuse across rebuilds.
     llm_state_dir: str = os.getenv('LLM_STATE_DIR', '/data/llm/state')
+    llm_error_retry_limit: int = int(os.getenv('LLM_ERROR_RETRY_LIMIT', '3'))
+
+    @field_validator('llm_error_retry_limit', mode='before')
+    @classmethod
+    def _clamp_llm_error_retry_limit(cls, value):
+        return max(1, int(value))
 
     # API used for internal callbacks (persist job status/results outside Redis)
     api_base_url: str = os.getenv('API_BASE_URL', 'http://api:8080')

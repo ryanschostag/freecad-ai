@@ -22,6 +22,7 @@ class Settings(BaseSettings):
 
     # LLM health check timeout (seconds)
     llm_health_timeout_seconds: float = 2.0
+    llm_error_retry_limit: int = 3
     redis_url: str = "redis://redis:6379/0"
     storage_mode: str = "minio"
     s3_endpoint: str = "http://minio:9000"

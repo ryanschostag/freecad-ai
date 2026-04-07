@@ -324,7 +324,7 @@ async def send_message(session_id: str, payload: dict, db: Session = Depends(get
                 export=export,
                 units=units,
                 tolerance_mm=tolerance_mm,
-                max_repair_iterations=3,
+                max_repair_iterations=max(1, int(settings.llm_error_retry_limit)),
                 timeout_seconds=timeout_seconds,
                 session_training_state=session_training_state,
             )
@@ -363,7 +363,7 @@ async def send_message(session_id: str, payload: dict, db: Session = Depends(get
                 "export": export,
                 "units": units,
                 "tolerance_mm": tolerance_mm,
-                "max_repair_iterations": 3,
+                "max_repair_iterations": max(1, int(settings.llm_error_retry_limit)),
                 "timeout_seconds": timeout_seconds,
                 "session_training_state": session_training_state,
             },

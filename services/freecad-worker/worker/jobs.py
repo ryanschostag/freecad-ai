@@ -322,7 +322,7 @@ def run_repair_loop_job(
     export: list[str] | dict | None = None,
     units: str | None = None,
     tolerance_mm: float | None = None,
-    max_repair_iterations: int = 3,
+    max_repair_iterations: int | None = None,
     timeout_seconds: int = 300,
     session_training_state: dict | None = None,
 ):
@@ -383,7 +383,8 @@ def run_repair_loop_job(
         llm_budget = _llm_runtime_budget(timeout_seconds, prompt_tokens=estimated_prompt_tokens)
         prompt_compacted = True
 
-    max_iterations = max(1, int(max_repair_iterations or 1))
+    configured_retry_limit = max(1, int(settings.llm_error_retry_limit))
+    max_iterations = max(1, int(max_repair_iterations if max_repair_iterations is not None else configured_retry_limit))
 
     macro_code = ""
     raw_macro_code = ""
