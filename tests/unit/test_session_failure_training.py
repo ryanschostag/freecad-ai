@@ -37,6 +37,8 @@ def test_build_session_training_snapshot_captures_known_failure_lessons(tmp_path
 
 def test_iteration_training_snapshot_captures_ui_macro_failures_and_writes_latest(tmp_path):
     module = _load_module("worker_session_training_iter", "services/freecad-worker/worker/session_training.py")
+    import importlib
+    model_state = importlib.import_module("worker.model_state")
     snapshot = module.persist_iteration_training_snapshot(
         session_id="session-1",
         job_id="job-99",
@@ -51,9 +53,12 @@ def test_iteration_training_snapshot_captures_ui_macro_failures_and_writes_lates
         issues=["ui macro execution failed"],
         state_dir=str(tmp_path),
     )
-    latest = json.loads((tmp_path / "latest.json").read_text(encoding="utf-8"))
+    latest = model_state.read_latest_pointer(str(tmp_path))
     rendered = json.dumps(snapshot.inference_profile)
+    assert latest is not None
     assert latest["run_id"] == snapshot.run_id
+    assert latest["manifest_path"].startswith(f"sqlite://{tmp_path / 'llm-state.sqlite3'}#run_id={snapshot.run_id}")
+    assert (tmp_path / "llm-state.sqlite3").exists()
     assert snapshot.run_id == "session-session-1-job-99-iter-2"
     assert "Never call App.getDocument('Model') unless that document already exists" in rendered
     assert "Do not reference undefined variables" in rendered
