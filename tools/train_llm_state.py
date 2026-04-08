@@ -156,7 +156,7 @@ def main() -> int:
             {
                 "run_id": snapshot.run_id,
                 "state_path": str(snapshot.path),
-                "latest_pointer": str(snapshot.path.parent / model_state.LATEST_POINTER_FILENAME),
+                "latest_pointer": str(snapshot.path),
             },
             indent=2,
         )

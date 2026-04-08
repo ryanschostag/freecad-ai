@@ -1,0 +1,6 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir fastapi==0.115.0 uvicorn==0.30.6
+COPY tools/fake_llm_server.py /app/fake_llm_server.py
