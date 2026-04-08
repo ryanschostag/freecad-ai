@@ -1,5 +1,5 @@
 import importlib.util
-import json
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -18,7 +18,7 @@ def _load_jobs_module():
     return module
 
 
-def test_run_repair_loop_job_persists_retry_training_state_to_configured_directory(monkeypatch, tmp_path):
+def test_run_repair_loop_job_persists_retry_training_state_to_configured_sqlite_directory(monkeypatch, tmp_path):
     jobs = _load_jobs_module()
 
     responses = iter([
@@ -43,8 +43,17 @@ def test_run_repair_loop_job_persists_retry_training_state_to_configured_directo
         max_repair_iterations=2,
     )
 
-    latest = json.loads((tmp_path / "latest.json").read_text(encoding="utf-8"))
+    db_path = tmp_path / "llm-state.sqlite3"
+    with sqlite3.connect(db_path) as conn:
+        latest = conn.execute("SELECT run_id FROM state_latest WHERE singleton_id = 1").fetchone()
+        run_row = conn.execute(
+            "SELECT inference_profile_json FROM state_runs WHERE run_id = ?",
+            ("session-session-1-job-1-iter-1",),
+        ).fetchone()
+
     assert result["passed"] is True
-    assert latest["run_id"] == "session-session-1-job-1-iter-1"
-    assert (tmp_path / latest["run_id"] / "inference_profile.json").exists()
+    assert latest is not None
+    assert latest[0] == "session-session-1-job-1-iter-1"
+    assert run_row is not None
+    assert 'create separate razor handle housing blade spacers and screw' in run_row[0]
     assert result["artifacts"][0]["kind"] == "freecad_macro_py"
