@@ -1,5 +1,9 @@
 FROM python:3.11-slim
 
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_DEFAULT_TIMEOUT=180 \
+    PIP_RETRIES=10
+
 WORKDIR /app
 
 # When building from the repo root (used by the docker "test" profile), the

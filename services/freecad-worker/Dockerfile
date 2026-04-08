@@ -1,6 +1,9 @@
 FROM python:3.11-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_DEFAULT_TIMEOUT=180 \
+    PIP_RETRIES=10
 RUN apt-get update && apt-get install -y --no-install-recommends \
     freecad \
     ca-certificates \

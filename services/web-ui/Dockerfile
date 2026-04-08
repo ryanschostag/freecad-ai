@@ -1,5 +1,9 @@
 FROM python:3.12-slim
 
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_DEFAULT_TIMEOUT=180 \
+    PIP_RETRIES=10
+
 WORKDIR /app
 
 COPY requirements.txt /app/requirements.txt
