@@ -12,3 +12,11 @@ def test_internal_job_routes_are_not_double_prefixed():
     assert '@router.post("/jobs/{job_id}/retrying")' in internal_py
     assert '/internal/jobs/{job_id}/started' not in internal_py
     assert '/internal/internal/jobs/{job_id}/started' not in main_py
+
+
+
+def test_internal_job_complete_route_allows_transition_from_retrying():
+    repo_root = Path(__file__).resolve().parents[2]
+    internal_py = (repo_root / "services" / "api" / "app" / "routes" / "internal_jobs.py").read_text(encoding="utf-8")
+
+    assert 'if jr.status not in ("queued", "started", "retrying")' in internal_py

@@ -62,3 +62,23 @@ def test_macro_validation_flags_freecad_export_call():
     err = jobs._macro_validation_error('import FreeCAD\nFreeCAD.export([], "x.FCStd")\n')
     assert err is not None
     assert "must not be used" in err or "not a valid export API" in err
+
+
+
+def test_macro_validation_flags_rotation_vector_without_angle():
+    jobs = _load_jobs_module()
+    err = jobs._macro_validation_error("""import FreeCAD as App
+blade = object()
+blade.Placement = App.Placement(App.Vector(0, 0, 0), App.Rotation(App.Vector(0, 0, 0)))
+""")
+    assert err is not None
+    assert "Rotation" in err
+
+
+def test_macro_validation_flags_assignment_of_placement_type():
+    jobs = _load_jobs_module()
+    err = jobs._macro_validation_error("""import FreeCAD as App
+blade_cut.Placement = App.Placement
+""")
+    assert err is not None
+    assert "Placement" in err

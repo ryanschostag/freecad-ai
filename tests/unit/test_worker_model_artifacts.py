@@ -273,3 +273,66 @@ def test_run_repair_loop_job_uses_compact_retry_prompt_for_probable_truncation(m
 
     diag_upload = next(u for u in uploads if u["key"].endswith(".diagnostics.json"))
     assert b'"probable_truncation": true' in diag_upload["data"]
+
+
+def test_run_repair_loop_job_retries_when_runner_status_captures_macro_exception(monkeypatch):
+    jobs = _load_jobs_module()
+
+    uploads = []
+    prompts = []
+    responses = iter([
+        "import FreeCAD as App\nbad = 1\n",
+        "import FreeCAD as App\nApp.newDocument('Model')\n",
+    ])
+
+    def fake_chat(messages, **_kwargs):
+        prompts.append(messages[-1]["content"])
+        return next(responses)
+
+    monkeypatch.setattr(jobs, "chat", fake_chat)
+    monkeypatch.setattr(jobs, "_resolve_freecadcmd", lambda: "/usr/bin/freecadcmd")
+    monkeypatch.setattr(
+        jobs,
+        "put_object",
+        lambda key, data, content_type="application/octet-stream": uploads.append(
+            {"key": key, "data": data, "content_type": content_type}
+        ),
+    )
+
+    call_count = {"value": 0}
+
+    def fake_run_freecad_headless(*, freecadcmd, macro_path, outdir, export, timeout_seconds):
+        call_count["value"] += 1
+        out = Path(outdir)
+        if call_count["value"] == 1:
+            (out / "runner_status.json").write_text(
+                "{\"runner_invoked\": true, \"exception\": \"Traceback\\nTypeError: type must be 'Placement', not type\", \"outputs\": [\"/tmp/model.FCStd\"]}",
+                encoding="utf-8",
+            )
+            (out / "model.FCStd").write_bytes(b"fcstd-bytes")
+            return "VALIDATION:EXEC_EXCEPTION:type must be 'Placement', not type", "", 0
+        (out / "runner_status.json").write_text(
+            '{"runner_invoked": true, "outputs": ["/tmp/model.FCStd"]}',
+            encoding="utf-8",
+        )
+        (out / "model.FCStd").write_bytes(b"fcstd-bytes")
+        return "ok", "", 0
+
+    monkeypatch.setattr(jobs, "_run_freecad_headless", fake_run_freecad_headless)
+
+    result = jobs.run_repair_loop_job(
+        job_id="job-1",
+        session_id="session-1",
+        user_message_id="message-1",
+        prompt="create a simple box 10 mm x 20 mm x 5 mm",
+        export={"fcstd": True, "step": False, "stl": False},
+        max_repair_iterations=2,
+    )
+
+    assert result["passed"] is True
+    assert result["iterations"] == 2
+    assert call_count["value"] == 2
+    assert any("runner captured macro exception" in p for p in prompts[1:])
+    diag_upload = next(u for u in uploads if u["key"].endswith(".diagnostics.json"))
+    assert b'"successful_iteration": 2' in diag_upload["data"]
+    assert b'"status": "exported_models"' in diag_upload["data"]

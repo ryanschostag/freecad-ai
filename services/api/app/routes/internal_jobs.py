@@ -70,7 +70,7 @@ def mark_job_complete(job_id: str, payload: JobCompleteIn, db: Session = Depends
     if jr.status in ("finished", "failed"):
         return {"ok": True, "status": jr.status}
 
-    if jr.status not in ("queued", "started"):
+    if jr.status not in ("queued", "started", "retrying"):
         raise HTTPException(status_code=409, detail=f"invalid state transition: {jr.status} -> {payload.status}")
 
     if jr.status == "queued":

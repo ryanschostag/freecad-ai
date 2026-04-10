@@ -1,3 +1,4 @@
+import ast
 import hashlib
 import json
 import os
@@ -172,6 +173,35 @@ def _python_syntax_error(source: str) -> str | None:
         return f"{detail} at {location}"
 
 
+def _is_app_or_freecad_attr(node: ast.AST, attr_name: str) -> bool:
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == attr_name
+        and isinstance(node.value, ast.Name)
+        and node.value.id in {"App", "FreeCAD"}
+    )
+
+
+def _macro_ast_validation_error(source: str) -> str | None:
+    try:
+        tree = ast.parse(source or "")
+    except SyntaxError:
+        return None
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Attribute) and target.attr == "Placement" and _is_app_or_freecad_attr(node.value, "Placement"):
+                    return "Placement properties must be assigned an App.Placement instance, not the App.Placement type"
+
+        if isinstance(node, ast.Call) and _is_app_or_freecad_attr(node.func, "Rotation") and len(node.args) == 1 and not node.keywords:
+            arg = node.args[0]
+            if isinstance(arg, ast.Call) and _is_app_or_freecad_attr(arg.func, "Vector"):
+                return "App.Rotation(App.Vector(...)) is invalid; use App.Rotation() for identity or App.Rotation(axis_vector, angle_degrees)"
+
+    return None
+
+
 def _macro_validation_error(source: str) -> str | None:
     patterns = [
         (r"(?m)\bFreeCAD\.export\s*\(", "FreeCAD.export is not a valid export API here; do not export from the macro"),
@@ -185,7 +215,7 @@ def _macro_validation_error(source: str) -> str | None:
     for pattern, message in patterns:
         if re.search(pattern, source or ""):
             return message
-    return None
+    return _macro_ast_validation_error(source)
 
 
 def _is_probably_truncated_syntax_issue(syntax_error: str) -> bool:
@@ -572,6 +602,38 @@ def run_repair_loop_job(
             model_export_stdout = stdout or ""
             model_export_stderr = stderr or ""
             model_export_returncode = int(returncode)
+            runner_exception = None
+            if runner_status and runner_status.get("exception"):
+                runner_exception = str(runner_status.get("exception")).splitlines()[-1]
+            if runner_exception:
+                model_export_skipped_reason = f"FreeCAD runner captured macro exception: {runner_exception}"
+                generation_attempts.append(
+                    {
+                        "iteration": iteration,
+                        "status": "freecad_macro_exception",
+                        "detail": model_export_skipped_reason,
+                        "chars": len(candidate),
+                    }
+                )
+                if iteration >= max_iterations:
+                    issues.append(model_export_skipped_reason)
+                    break
+                _mark_job_retrying(job_id=job_id, retry_count=iteration, reason=model_export_skipped_reason)
+                session_training_state = _persist_retry_training_state(
+                    session_id=session_id,
+                    job_id=job_id,
+                    iteration=iteration,
+                    prompt=prompt,
+                    macro_code=candidate,
+                    detail=model_export_skipped_reason,
+                    stdout=model_export_stdout,
+                    stderr=model_export_stderr,
+                    runner_status=runner_status,
+                    current_state=session_training_state,
+                )
+                print(json.dumps({"status": "retrying", "retry-count": iteration, "reason": model_export_skipped_reason}))
+                messages = [messages[0], {"role": "user", "content": _repair_prompt_for_runner_failure(candidate, failure=model_export_skipped_reason, stdout=model_export_stdout, stderr=model_export_stderr, runner_status=runner_status)}]
+                continue
             if model_export_returncode != 0:
                 model_export_skipped_reason = f"FreeCAD exited with status {model_export_returncode}"
                 generation_attempts.append(
