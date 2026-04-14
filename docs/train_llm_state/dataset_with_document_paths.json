@@ -20,7 +20,7 @@
   ],
   "document_paths": [
     "./docs/models-sources.md",
-    "./docs/operational_runbook.md",
+    "./docs/operational-runbook.md",
     "./docs/testing.md"
   ]
 }
