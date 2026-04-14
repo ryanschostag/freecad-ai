@@ -1,0 +1,317 @@
+openapi: 3.0.3
+info:
+  title: CAD Agent API
+  version: 1.2.0
+servers:
+  - url: http://localhost:8080
+
+paths:
+  /v1/health:
+    get:
+      summary: Health check
+      responses:
+        "200": {description: OK}
+
+  /v1/sessions:
+    post:
+      summary: Create a new session
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CreateSessionRequest"}
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Session"}
+
+  /v1/sessions/{session_id}/messages:
+    post:
+      summary: Send a prompt (enqueue a background build/validate job)
+      parameters:
+        - {$ref: "#/components/parameters/SessionId"}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CreateMessageRequest"}
+      responses:
+        "202":
+          description: Accepted - job enqueued
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/EnqueueResponse"}
+
+  /v1/jobs/{job_id}:
+    get:
+      summary: Get job status/result
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        "200":
+          description: Job state
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/JobStatus"}
+
+  /v1/sessions/{session_id}/end:
+    post:
+      summary: End/close a session
+      parameters: [{$ref: "#/components/parameters/SessionId"}]
+      responses:
+        "200":
+          description: Closed
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Session"}
+
+  /v1/sessions/{session_id}/fork:
+    post:
+      summary: Fork a session into a new session_id
+      parameters: [{$ref: "#/components/parameters/SessionId"}]
+      responses:
+        "201":
+          description: Forked
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Session"}
+
+  /v1/sessions/{session_id}/logs:
+    get:
+      summary: Get structured logs for a session
+      parameters:
+        - {$ref: "#/components/parameters/SessionId"}
+        - name: since
+          in: query
+          required: false
+          schema: {type: string, format: date-time}
+      responses:
+        "200":
+          description: Log events
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/LogEventList"}
+
+  /v1/sessions/{session_id}/metrics:
+    get:
+      summary: Quick metrics for a session
+      parameters: [{$ref: "#/components/parameters/SessionId"}]
+      responses:
+        "200":
+          description: Metrics
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/SessionMetrics"}
+
+
+  /v1/sessions/{session_id}/artifacts:
+    get:
+      summary: List artifacts for a session
+      parameters:
+        - {$ref: "#/components/parameters/SessionId"}
+      responses:
+        "200":
+          description: Artifacts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [artifacts]
+                properties:
+                  artifacts:
+                    type: array
+                    items:
+                      type: object
+                      required: [artifact_id, kind, object_key, created_at]
+                      properties:
+                        artifact_id: {type: string, format: uuid}
+                        kind: {type: string}
+                        object_key: {type: string}
+                        created_at: {type: string, format: date-time}
+                        sha256: {type: string, nullable: true}
+                        bytes: {type: integer, nullable: true}
+                        message_id: {type: string}
+                        event_type: {type: string}
+
+  /v1/artifacts/{artifact_id}:
+    get:
+      summary: Get a presigned download URL
+      parameters:
+        - name: artifact_id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        "200":
+          description: Artifact download info
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ArtifactDownload"}
+
+  /v1/rag/sources/reconcile:
+    post:
+      summary: Reconcile rag_sources.yaml into DB
+      responses:
+        "200":
+          description: Reconciled
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ReconcileResult"}
+
+  /v1/rag/query:
+    post:
+      summary: Retrieve top-k chunks from authoritative index (pgvector)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/RagQueryRequest"}
+      responses:
+        "200":
+          description: Retrieved chunks
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/RagQueryResponse"}
+
+components:
+  parameters:
+    SessionId:
+      name: session_id
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+
+  schemas:
+    CreateSessionRequest:
+      type: object
+      properties:
+        title: {type: string}
+        project_id: {type: string}
+
+    Session:
+      type: object
+      required: [session_id, status, created_at]
+      properties:
+        session_id: {type: string, format: uuid}
+        parent_session_id: {type: string, format: uuid, nullable: true}
+        title: {type: string}
+        project_id: {type: string, nullable: true}
+        status: {type: string, enum: [active, closed]}
+        created_at: {type: string, format: date-time}
+        closed_at: {type: string, format: date-time, nullable: true}
+
+    CreateMessageRequest:
+      type: object
+      required: [content]
+      properties:
+        content: {type: string}
+        mode: {type: string, enum: [design, modify, explain, export], default: design}
+        export:
+          type: object
+          required: [fcstd, step, stl]
+          properties:
+            fcstd: {type: boolean, default: true}
+            step: {type: boolean, default: true}
+            stl: {type: boolean, default: false}
+        units: {type: string, enum: [mm, inch], default: mm}
+        tolerance_mm: {type: number, default: 0.1}
+
+    EnqueueResponse:
+      type: object
+      required: [job_id, session_id, user_message_id, macro_artifact_id]
+      properties:
+        job_id: {type: string, format: uuid}
+        session_id: {type: string, format: uuid}
+        user_message_id: {type: string, format: uuid}
+        macro_artifact_id: {type: string, format: uuid}
+
+    JobStatus:
+      type: object
+      required: [job_id, status, session_id, user_message_id]
+      properties:
+        job_id: {type: string, format: uuid}
+        status: {type: string, enum: [queued, started, finished, failed]}
+        session_id: {type: string, format: uuid}
+        user_message_id: {type: string, format: uuid}
+        result:
+          type: object
+          nullable: true
+          description: Present when finished
+        error:
+          type: object
+          nullable: true
+          description: Present when failed
+
+    ArtifactDownload:
+      type: object
+      required: [artifact_id, kind, object_key, download_url, expires_at]
+      properties:
+        artifact_id: {type: string, format: uuid}
+        kind: {type: string}
+        object_key: {type: string}
+        download_url: {type: string}
+        expires_at: {type: string, format: date-time}
+
+    LogEventList:
+      type: object
+      required: [events]
+      properties:
+        events:
+          type: array
+          items: {$ref: "#/components/schemas/LogEvent"}
+
+    LogEvent:
+      type: object
+      required: [event_id, session_id, ts, type]
+      properties:
+        event_id: {type: string, format: uuid}
+        session_id: {type: string, format: uuid}
+        ts: {type: string, format: date-time}
+        type: {type: string}
+        payload: {type: object, additionalProperties: true}
+
+    SessionMetrics:
+      type: object
+      required: [session_id, prompts, completions, validations]
+      properties:
+        session_id: {type: string, format: uuid}
+        prompts: {type: integer}
+        completions: {type: integer}
+        validations: {type: integer}
+
+    ReconcileResult:
+      type: object
+      required: [added, updated, disabled]
+      properties:
+        added: {type: array, items: {type: string}}
+        updated: {type: array, items: {type: string}}
+        disabled: {type: array, items: {type: string}}
+
+    RagQueryRequest:
+      type: object
+      required: [query]
+      properties:
+        query: {type: string}
+        top_k: {type: integer, default: 8}
+        max_trust_tier: {type: integer, default: 2}
+
+    RagQueryResponse:
+      type: object
+      required: [results]
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+            required: [chunk_id, source_id, locator, score, text]
+            properties:
+              chunk_id: {type: string, format: uuid}
+              source_id: {type: string}
+              locator: {type: string}
+              score: {type: number}
+              text: {type: string}

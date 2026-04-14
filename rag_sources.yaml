@@ -1,0 +1,219 @@
+version: 1
+
+policy:
+  default_trust_tier: community
+  require_https: true
+
+  allow_domains:
+    - wiki.freecad.org
+    - freecad.github.io
+    - openscad.org
+    - en.wikibooks.org
+    - mcmaster.com
+    - us.misumi-ec.com
+    - digikey.com
+    - keystoneelectronics.com
+    - github.com
+    - cad.onshape.com
+    - deep-geometry.github.io
+
+  deny_domains:
+    - youtube.com
+    - facebook.com
+    - twitter.com
+    - reddit.com
+    - pinterest.com
+
+
+sources:
+
+  # ---------------------------------------------------------------------------
+  # EXISTING SOURCE (unchanged)
+  # ---------------------------------------------------------------------------
+  - source_id: freecad-wiki
+    enabled: true
+    trust_tier: official
+    kind: web
+
+    entrypoints:
+      - https://wiki.freecad.org/
+
+    include_patterns:
+      - "^https://wiki.freecad.org/.*"
+
+    exclude_patterns:
+      - ".*Special:.*"
+      - ".*oldid=.*"
+
+    license_note: "FreeCAD wiki documentation"
+
+
+  # ---------------------------------------------------------------------------
+  # FreeCAD API + scripting documentation
+  # ---------------------------------------------------------------------------
+  - source_id: freecad-api-docs
+    enabled: true
+    trust_tier: official
+    kind: web
+
+    entrypoints:
+      - https://freecad.github.io/API/
+      - https://wiki.freecad.org/FreeCAD_API
+
+    include_patterns:
+      - "^https://freecad.github.io/API/.*"
+      - "^https://wiki.freecad.org/FreeCAD_API.*"
+
+    exclude_patterns:
+      - ".*\\.pdf$"
+
+    license_note: "FreeCAD API documentation"
+
+
+  # ---------------------------------------------------------------------------
+  # McMaster mechanical reference
+  # ---------------------------------------------------------------------------
+  - source_id: mcmaster-mechanical-components
+    enabled: true
+    trust_tier: vendor_reference
+    kind: web
+
+    entrypoints:
+      - https://www.mcmaster.com/bearings/
+      - https://www.mcmaster.com/gears/
+      - https://www.mcmaster.com/fans/
+      - https://www.mcmaster.com/batteries/
+      - https://www.mcmaster.com/enclosures/
+
+    include_patterns:
+      - "^https://www\\.mcmaster\\.com/.*"
+
+    exclude_patterns:
+      - ".*\\.pdf$"
+
+    license_note: "Mechanical part reference"
+
+
+  # ---------------------------------------------------------------------------
+  # MISUMI configurable mechanical components
+  # ---------------------------------------------------------------------------
+  - source_id: misumi-configurable-components
+    enabled: true
+    trust_tier: vendor_reference
+    kind: web
+
+    entrypoints:
+      - https://us.misumi-ec.com/vona2/mech/
+
+    include_patterns:
+      - "^https://us\\.misumi-ec\\.com/.*"
+
+    exclude_patterns:
+      - ".*\\.pdf$"
+
+    license_note: "Mechanical CAD reference"
+
+
+  # ---------------------------------------------------------------------------
+  # DigiKey electronic components
+  # ---------------------------------------------------------------------------
+  - source_id: digikey-electromechanical-components
+    enabled: true
+    trust_tier: vendor_reference
+    kind: web
+
+    entrypoints:
+      - https://www.digikey.com/en/products/category/battery-products/86
+      - https://www.digikey.com/en/products/category/enclosures-boxes-cases/594
+      - https://www.digikey.com/en/products/category/fans-thermal-management/217
+
+    include_patterns:
+      - "^https://www\\.digikey\\.com/.*"
+
+    exclude_patterns:
+      - ".*\\.pdf$"
+
+    license_note: "Electromechanical part references"
+
+
+  # ---------------------------------------------------------------------------
+  # Keystone battery holders
+  # ---------------------------------------------------------------------------
+  - source_id: keystone-battery-holders
+    enabled: true
+    trust_tier: vendor_reference
+    kind: web
+
+    entrypoints:
+      - https://www.keyelco.com/category.cfm/Battery-Holders
+
+    include_patterns:
+      - "^https://www\\.keyelco\\.com/.*"
+
+    exclude_patterns:
+      - ".*\\.pdf$"
+
+    license_note: "Battery holder mechanical references"
+
+
+  # ---------------------------------------------------------------------------
+  # DeepCAD
+  # ---------------------------------------------------------------------------
+  - source_id: deepcad
+    enabled: true
+    trust_tier: research_dataset
+    kind: web
+
+    entrypoints:
+      - https://github.com/ChrisWu1997/DeepCAD
+
+    include_patterns:
+      - "^https://github\\.com/ChrisWu1997/DeepCAD.*"
+      - "^https://.*deepcad.*"
+
+    exclude_patterns:
+      - ".*issues.*"
+      - ".*pull.*"
+
+    license_note: "Research dataset with CAD construction sequences; licensing defined in repository; verify for commercial usage"
+
+
+  # ---------------------------------------------------------------------------
+  # ABC Dataset (Autodesk / Deep Geometry)
+  # ---------------------------------------------------------------------------
+  - source_id: abc-dataset
+    enabled: true
+    trust_tier: research_dataset
+    kind: web
+
+    entrypoints:
+      - https://deep-geometry.github.io/abc-dataset/
+
+    include_patterns:
+      - "^https://deep-geometry\\.github\\.io/abc-dataset/.*"
+      - "^https://.*abc-dataset.*"
+
+    exclude_patterns:
+      - ".*\\.pdf$"
+
+    license_note: "Large-scale parametric CAD dataset (~1M models); generally permissive for research and industrial use; verify redistribution and attribution requirements before commercial deployment"
+
+
+  # ---------------------------------------------------------------------------
+  # Onshape Public CAD Documents
+  # ---------------------------------------------------------------------------
+  - source_id: onshape-public-cad
+    enabled: true
+    trust_tier: community_dataset
+    kind: web
+
+    entrypoints:
+      - https://cad.onshape.com/documents
+
+    include_patterns:
+      - "^https://cad\\.onshape\\.com/documents.*"
+
+    exclude_patterns:
+      - ".*private.*"
+
+    license_note: "Public user-shared parametric CAD models; licensing varies per document; verify individual document permissions before commercial use"

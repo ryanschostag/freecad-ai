@@ -1,0 +1,64 @@
+# Web UI Quick Start (MVP)
+
+This repo includes a minimal browser UI to reduce CLI friction and prevent tracking the wrong `job_id`.
+
+## What it can do (MVP)
+1. Create a new session (or continue an existing session)
+2. Send a prompt in a session
+3. Track a job until it finishes/fails (polls `/v1/jobs/{job_id}`)
+4. Fetch session logs (tail view) and list artifacts for a session
+
+## Start the stack with the Web UI
+
+### CPU profile
+```bash
+docker compose --profile cpu up -d --build
+```
+
+Open in your browser:
+- Web UI: `http://localhost:3000`
+- API Swagger: `http://localhost:8080/docs`
+- MinIO Console: `http://localhost:9001`
+
+### GPU profile
+```bash
+docker compose --profile gpu up -d --build
+```
+
+Open:
+- Web UI: `http://localhost:3000`
+
+## Using the Web UI
+
+### Create a session
+- Click **Create new session**
+- The UI stores the returned `session_id` as the active session
+
+### Continue an existing session
+- Paste a `session_id` into **Session ID**
+- Click **Load session logs** (validates the session by fetching logs)
+
+### Fork a session
+- Paste the parent `session_id` and click **Fork session**
+- The UI switches to the new session id
+
+### Send a prompt
+- Enter a prompt
+- Choose exports (`fcstd`, `step`, `stl`)
+- Click **Send prompt**
+- The returned `job_id` is automatically placed into the Job Tracker and polled
+
+### Track a job id
+- Paste any `job_id` into the Job ID field
+- Click **Track job**
+- The panel polls every ~1.5s until `finished` or `failed`
+
+### Logs & artifacts
+- **Fetch logs** pulls `/v1/sessions/{session_id}/logs` and displays the most recent N events
+- **List artifacts** pulls `/v1/sessions/{session_id}/artifacts`
+- Click **Get link** to open a presigned download URL for an artifact
+
+## Notes
+
+- The Web UI reverse-proxies API calls via `/api/*` to avoid browser CORS issues.
+- Inside Docker, the UI connects to the API via `http://api:8080` (or `http://api-test:8080` in the test profile).

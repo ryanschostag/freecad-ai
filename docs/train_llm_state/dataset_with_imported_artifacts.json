@@ -1,0 +1,22 @@
+{
+  "model": {
+    "model_id": "imported-freecad-profile",
+    "backend": "llama.cpp",
+    "device": "cpu"
+  },
+  "epochs": 1,
+  "examples": [
+    {
+      "prompt": "Repair a FreeCAD macro that forgot to recompute before export.",
+      "response": "Insert an explicit recompute call after geometry changes and before export so the final artifact reflects the latest model state."
+    }
+  ],
+  "documents": [
+    "Preserve imported artifacts alongside generated metadata so the run directory stays self-describing."
+  ],
+  "checkpoint_path": "/absolute/path/to/external/checkpoint.bin",
+  "weights_path": "/absolute/path/to/external/model.safetensors",
+  "lora_adapter_path": "/absolute/path/to/external/lora_adapter_dir",
+  "optimizer_state_path": "/absolute/path/to/external/optimizer_state.pt",
+  "embedding_index_path": "/absolute/path/to/external/embedding_index.faiss"
+}

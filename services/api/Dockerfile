@@ -1,0 +1,41 @@
+FROM python:3.11-slim
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_DEFAULT_TIMEOUT=180 \
+    PIP_RETRIES=10
+
+WORKDIR /app
+
+# Install runtime dependencies first so Docker build logs show clear progress
+# before the editable package install, which helps avoid long silent periods.
+COPY services/api/requirements.docker.txt /tmp/requirements.docker.txt
+RUN pip install --no-cache-dir -U pip setuptools wheel && \
+    pip install --no-cache-dir --progress-bar off -v -r /tmp/requirements.docker.txt
+
+# When building from the repo root (used by the docker "test" profile), the
+# API sources live under services/api.
+COPY services/api/pyproject.toml /app/pyproject.toml
+COPY services/api/alembic.ini /app/alembic.ini
+COPY services/api/alembic /app/alembic
+COPY services/api/app /app/app
+
+# Include the worker + shared packages so the API can enqueue jobs using a real callable.
+# This avoids RQ import-attribute edge cases from string-based func references.
+COPY services/freecad-worker/worker /app/worker
+COPY services/freecad-worker/shared /app/shared
+
+RUN pip install --no-cache-dir -e . --no-deps --progress-bar off -v
+
+# Optional: install test dependencies when building the "test" profile.
+ARG INSTALL_TEST_DEPS=0
+COPY tests/requirements.txt /app/tests/requirements.txt
+RUN if [ "$INSTALL_TEST_DEPS" = "1" ]; then \
+      pip install --no-cache-dir -r /app/tests/requirements.txt --progress-bar off -v; \
+    fi
+
+# Copy repo-level tests and tools so they can be executed inside the container.
+COPY tests /app/tests
+COPY tools /app/tools
+
+EXPOSE 8080
+CMD ["uvicorn","app.main:app","--host","0.0.0.0","--port","8080"]

@@ -1,0 +1,10 @@
+FROM python:3.11-slim
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_DEFAULT_TIMEOUT=180 \
+    PIP_RETRIES=10
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir fastapi==0.115.0 uvicorn==0.30.6
+COPY tools/fake_llm_server.py /app/fake_llm_server.py
